@@ -15,6 +15,7 @@ type RoomRow = {
   severity: Severity;
   status: Status;
   assignee: string;
+  affected: string[] | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -91,6 +92,13 @@ async function loadRoom(roomCode: string) {
   return { room, events };
 }
 
+const ALLOWED_AFFECTED = new Set(["frontend", "api", "worker", "db", "redis", "storage"]);
+
+function normalizeAffected(input: unknown, fallback: string[] = []): string[] {
+  if (!Array.isArray(input)) return fallback;
+  return [...new Set(input.map(String).filter((s) => ALLOWED_AFFECTED.has(s)))];
+}
+
 function serializeRoom(room: RoomRow, events: EventRow[]) {
   return {
     id: room.id,
@@ -99,6 +107,7 @@ function serializeRoom(room: RoomRow, events: EventRow[]) {
     severity: room.severity,
     status: room.status,
     assignee: room.assignee,
+    affected: room.affected ?? [],
     createdAt: room.created_at,
     updatedAt: room.updated_at,
     events: events.map((e) => ({
@@ -192,6 +201,7 @@ app.patch("/api/rooms/:code", async (c) => {
     severity?: Severity;
     status?: Status;
     assignee?: string;
+    affected?: string[];
   };
   const data = await loadRoom(roomCode);
   if (!data) return c.json({ error: "not_found" }, 404);
@@ -200,11 +210,12 @@ app.patch("/api/rooms/:code", async (c) => {
   const severity = body.severity ?? data.room.severity;
   const status = body.status ?? data.room.status;
   const assignee = body.assignee?.slice(0, 64) ?? data.room.assignee;
+  const affected = normalizeAffected(body.affected, data.room.affected ?? []);
 
   const [room] = await sql<RoomRow[]>`
     UPDATE rooms
     SET title = ${title}, severity = ${severity}, status = ${status},
-        assignee = ${assignee}, updated_at = NOW()
+        assignee = ${assignee}, affected = ${affected}, updated_at = NOW()
     WHERE id = ${data.room.id}
     RETURNING *
   `;
@@ -352,7 +363,15 @@ async function boot() {
         void publish(ws.data.roomCode, { type: "presence", names: presence(ws.data.roomCode) });
       },
       async message(ws, raw) {
-        let msg: { type?: string; body?: string; title?: string; severity?: string; status?: string; assignee?: string };
+        let msg: {
+          type?: string;
+          body?: string;
+          title?: string;
+          severity?: string;
+          status?: string;
+          assignee?: string;
+          affected?: string[];
+        };
         try {
           msg = JSON.parse(String(raw));
         } catch {
@@ -398,10 +417,11 @@ async function boot() {
           const severity = (msg.severity ?? data.room.severity) as Severity;
           const status = (msg.status ?? data.room.status) as Status;
           const assignee = (msg.assignee ?? data.room.assignee).slice(0, 64);
+          const affected = normalizeAffected(msg.affected, data.room.affected ?? []);
           const [room] = await sql<RoomRow[]>`
             UPDATE rooms
             SET title = ${title}, severity = ${severity}, status = ${status},
-                assignee = ${assignee}, updated_at = NOW()
+                assignee = ${assignee}, affected = ${affected}, updated_at = NOW()
             WHERE id = ${data.room.id}
             RETURNING *
           `;

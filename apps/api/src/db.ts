@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   severity TEXT NOT NULL DEFAULT 'sev2',
   status TEXT NOT NULL DEFAULT 'investigating',
   assignee TEXT NOT NULL DEFAULT '',
+  affected TEXT[] NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -34,4 +35,5 @@ CREATE INDEX IF NOT EXISTS events_room_id_idx ON events(room_id, created_at);
 
 export async function migrate() {
   await sql.unsafe(SCHEMA);
+  await sql.unsafe(`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS affected TEXT[] NOT NULL DEFAULT '{}'`);
 }

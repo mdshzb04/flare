@@ -12,8 +12,10 @@ import {
   uploadFile,
   wsUrl,
 } from "../api";
+import { BlastMap } from "../components/BlastMap";
 
 const NAME_KEY = "flare:name";
+const LAST_ROOM_KEY = "flare:lastRoom";
 
 export function RoomPage() {
   const { code = "" } = useParams();
@@ -24,10 +26,40 @@ export function RoomPage() {
   const [note, setNote] = useState("");
   const [err, setErr] = useState("");
   const [connected, setConnected] = useState(false);
+  const [flashSev, setFlashSev] = useState(false);
+  const [flashStatus, setFlashStatus] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const prevSev = useRef<string | null>(null);
+  const prevStatus = useRef<string | null>(null);
 
   const shareUrl = useMemo(() => (code ? `${location.origin}/r/${code}` : ""), [code]);
+
+  useEffect(() => {
+    if (code) localStorage.setItem(LAST_ROOM_KEY, code);
+  }, [code]);
+
+  useEffect(() => {
+    if (!room) return;
+    if (prevSev.current && prevSev.current !== room.severity) {
+      setFlashSev(true);
+      const t = setTimeout(() => setFlashSev(false), 600);
+      prevSev.current = room.severity;
+      return () => clearTimeout(t);
+    }
+    prevSev.current = room.severity;
+  }, [room?.severity]);
+
+  useEffect(() => {
+    if (!room) return;
+    if (prevStatus.current && prevStatus.current !== room.status) {
+      setFlashStatus(true);
+      const t = setTimeout(() => setFlashStatus(false), 600);
+      prevStatus.current = room.status;
+      return () => clearTimeout(t);
+    }
+    prevStatus.current = room.status;
+  }, [room?.status]);
 
   useEffect(() => {
     if (!joined || !code || !name) return;
@@ -38,7 +70,7 @@ export function RoomPage() {
 
     getRoom(code)
       .then((r) => {
-        if (!dead) setRoom(r);
+        if (!dead) setRoom({ ...r, affected: r.affected ?? [] });
       })
       .catch((e) => setErr(e instanceof Error ? e.message : "load failed"));
 
@@ -97,7 +129,9 @@ export function RoomPage() {
               : prev,
           );
         }
-        if (msg.type === "room:update" && msg.room) setRoom(msg.room);
+        if (msg.type === "room:update" && msg.room) {
+          setRoom({ ...msg.room, affected: msg.room.affected ?? [] });
+        }
       };
     }
 
@@ -139,20 +173,31 @@ export function RoomPage() {
     }
   }
 
-  async function patchRoom(patch: Partial<Pick<Room, "title" | "severity" | "status" | "assignee">>) {
+  async function patchRoom(
+    patch: Partial<Pick<Room, "title" | "severity" | "status" | "assignee" | "affected">>,
+  ) {
     if (!code) return;
     setRoom((prev) => (prev ? { ...prev, ...patch } : prev));
     try {
       const updated = await patchRoomHttp(code, patch);
-      setRoom(updated);
+      setRoom({ ...updated, affected: updated.affected ?? [] });
     } catch (ex) {
       setErr(ex instanceof Error ? ex.message : "update failed");
       try {
-        setRoom(await getRoom(code));
+        const r = await getRoom(code);
+        setRoom({ ...r, affected: r.affected ?? [] });
       } catch {
         /* */
       }
     }
+  }
+
+  function toggleAffected(serviceId: string) {
+    if (!room) return;
+    const cur = new Set(room.affected ?? []);
+    if (cur.has(serviceId)) cur.delete(serviceId);
+    else cur.add(serviceId);
+    void patchRoom({ affected: [...cur] });
   }
 
   async function onUpload(file: File) {
@@ -189,16 +234,21 @@ export function RoomPage() {
     return <p className="muted">{err || "Loading room…"}</p>;
   }
 
+  const viewers = Math.max(presence.length, 1);
+
   return (
     <>
       <div className="topbar">
         <div>
           <div className="row" style={{ marginBottom: "0.4rem" }}>
-            <span className={`sev ${room.severity}`}>{room.severity}</span>
-            <span className="muted">{room.status}</span>
+            <span className={`sev ${room.severity} ${flashSev ? "flash" : ""}`}>{room.severity}</span>
+            <span className={`muted ${flashStatus ? "flash" : ""}`}>{room.status}</span>
             <span className="muted">
               <i className={`live-dot ${connected ? "" : "bad"}`} />
               {connected ? "live" : "reconnecting"}
+            </span>
+            <span className="viewers" title={presence.join(", ") || name}>
+              {viewers} {viewers === 1 ? "person" : "people"} viewing
             </span>
           </div>
           <input
@@ -212,12 +262,13 @@ export function RoomPage() {
             <button type="button" onClick={() => navigator.clipboard.writeText(shareUrl)}>
               copy link
             </button>{" "}
-            ·{" "}
-            <Link to={`/s/${code}`}>public status</Link>
+            · <Link to={`/s/${code}`}>public status</Link> ·{" "}
+            <Link to={`/architecture?room=${code}`}>architecture</Link>
           </p>
         </div>
         <div className="row">
           <select
+            className={flashSev ? "flash" : ""}
             value={room.severity}
             onChange={(e) => void patchRoom({ severity: e.target.value as Severity })}
             aria-label="Severity"
@@ -228,6 +279,7 @@ export function RoomPage() {
             <option value="sev4">sev4</option>
           </select>
           <select
+            className={flashStatus ? "flash" : ""}
             value={room.status}
             onChange={(e) => void patchRoom({ status: e.target.value as Status })}
             aria-label="Status"
@@ -238,6 +290,15 @@ export function RoomPage() {
             <option value="resolved">resolved</option>
           </select>
         </div>
+      </div>
+
+      <div className="card glow">
+        <BlastMap
+          affected={room.affected ?? []}
+          interactive
+          onToggle={toggleAffected}
+          title="Blast radius"
+        />
       </div>
 
       <div className="layout">
@@ -300,15 +361,6 @@ export function RoomPage() {
               onChange={(e) => setRoom({ ...room, assignee: e.target.value })}
               onBlur={(e) => void patchRoom({ assignee: e.target.value })}
             />
-          </div>
-          <div className="card">
-            <h3 style={{ marginTop: 0, fontFamily: "var(--font-display)" }}>Zerops path</h3>
-            <div className="flow">
-              <b>api</b> → <b>db</b> → <b>valkey</b> → <b>clients</b>
-            </div>
-            <p className="muted" style={{ margin: "0.65rem 0 0", fontSize: "0.78rem" }}>
-              Severity + notes hit Postgres, then fan-out over Valkey so every tab updates.
-            </p>
           </div>
           <div className="card">
             <h3 style={{ marginTop: 0, fontFamily: "var(--font-display)" }}>On call</h3>

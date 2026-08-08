@@ -6,7 +6,7 @@
 - **What it does:** Live multiplayer incident war-room. Share a link; severity, timeline notes, and presence sync across browsers. Screenshots go to object storage; a worker generates thumbnails.  
 - **Live URL:** _(paste frontend Zerops URL)_  
 - **API URL:** _(paste api Zerops URL)_  
-- **Repository:** _(paste GitHub URL)_  
+- **Repository:** https://github.com/mdshzb04/flare  
 - **How Zerops is used:** Six services — `frontend` (static), `api` (Bun/Hono + WebSocket), `worker` (Sharp thumbnails), `db` (PostgreSQL), `redis` (Valkey pub/sub + queue), `storage` (S3). Private networking between backends; only frontend + api public. Deploy via `zerops.yaml` + `import-services.yml`.  
 - **AI tools used:** Cursor (Composer). Disclosed. Participant owns architecture and can explain every service.
 

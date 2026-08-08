@@ -27,6 +27,13 @@ export type Room = {
 
 export type ArchService = { name: string; role: string };
 
+export type Health = {
+  ok: boolean;
+  service: string;
+  checks: { postgres: boolean; valkey: boolean; storage: boolean };
+  architecture: string[];
+};
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, init);
   if (!res.ok) throw new Error(`${res.status} ${path}`);
@@ -68,6 +75,10 @@ export function getArchitecture() {
   return req<{ name: string; platform: string; services: ArchService[] }>("/api/architecture");
 }
 
+export function getHealth() {
+  return req<Health>("/health");
+}
+
 export async function uploadFile(code: string, file: File, author: string, body: string) {
   const fd = new FormData();
   fd.set("file", file);
@@ -87,4 +98,11 @@ export function wsUrl(code: string, name: string) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const host = API_URL ? new URL(API_URL).host : location.host;
   return `${proto}//${host}/ws?room=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}`;
+}
+
+export function eventPath(kind: string) {
+  if (kind === "attachment") {
+    return "api → storage → Valkey queue → worker → Postgres → Valkey fan-out";
+  }
+  return "api → Postgres → Valkey pub/sub → other clients";
 }

@@ -1,10 +1,11 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import {
   EventItem,
   Room,
   Severity,
   Status,
+  eventPath,
   getRoom,
   patchRoomHttp,
   postEvent,
@@ -196,7 +197,7 @@ export function RoomPage() {
             <span className={`sev ${room.severity}`}>{room.severity}</span>
             <span className="muted">{room.status}</span>
             <span className="muted">
-              <i className="live-dot" />
+              <i className={`live-dot ${connected ? "" : "bad"}`} />
               {connected ? "live" : "reconnecting"}
             </span>
           </div>
@@ -210,7 +211,9 @@ export function RoomPage() {
             Share{" "}
             <button type="button" onClick={() => navigator.clipboard.writeText(shareUrl)}>
               copy link
-            </button>
+            </button>{" "}
+            ·{" "}
+            <Link to={`/s/${code}`}>public status</Link>
           </p>
         </div>
         <div className="row">
@@ -245,12 +248,15 @@ export function RoomPage() {
             room.events.map((ev) => (
               <article key={ev.id} className="event">
                 <div className="meta">
-                  {ev.author} · {new Date(ev.createdAt).toLocaleTimeString()} · {ev.kind}
+                  <span>
+                    {ev.author} · {new Date(ev.createdAt).toLocaleTimeString()} · {ev.kind}
+                  </span>
                 </div>
                 <div>{ev.body}</div>
                 {ev.thumbUrl || ev.attachmentUrl ? (
                   <img src={ev.thumbUrl || ev.attachmentUrl || ""} alt="attachment" />
                 ) : null}
+                <div className="path">path: {eventPath(ev.kind)}</div>
               </article>
             ))
           )}
@@ -294,6 +300,15 @@ export function RoomPage() {
               onChange={(e) => setRoom({ ...room, assignee: e.target.value })}
               onBlur={(e) => void patchRoom({ assignee: e.target.value })}
             />
+          </div>
+          <div className="card">
+            <h3 style={{ marginTop: 0, fontFamily: "var(--font-display)" }}>Zerops path</h3>
+            <div className="flow">
+              <b>api</b> → <b>db</b> → <b>valkey</b> → <b>clients</b>
+            </div>
+            <p className="muted" style={{ margin: "0.65rem 0 0", fontSize: "0.78rem" }}>
+              Severity + notes hit Postgres, then fan-out over Valkey so every tab updates.
+            </p>
           </div>
           <div className="card">
             <h3 style={{ marginTop: 0, fontFamily: "var(--font-display)" }}>On call</h3>

@@ -6,6 +6,8 @@ import {
   Severity,
   Status,
   getRoom,
+  patchRoomHttp,
+  postEvent,
   uploadFile,
   wsUrl,
 } from "../api";
@@ -30,6 +32,8 @@ export function RoomPage() {
     if (!joined || !code || !name) return;
     let dead = false;
     let pingTimer: ReturnType<typeof setInterval> | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let ws: WebSocket | null = null;
 
     getRoom(code)
       .then((r) => {
@@ -37,52 +41,72 @@ export function RoomPage() {
       })
       .catch((e) => setErr(e instanceof Error ? e.message : "load failed"));
 
-    const ws = new WebSocket(wsUrl(code, name));
-    wsRef.current = ws;
-    ws.onopen = () => {
-      setConnected(true);
-      pingTimer = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
-      }, 25000);
-    };
-    ws.onclose = () => setConnected(false);
-    ws.onmessage = (ev) => {
-      let msg: {
-        type?: string;
-        names?: string[];
-        event?: EventItem;
-        eventId?: string;
-        thumbUrl?: string;
-        room?: Room;
+    function connect() {
+      if (dead) return;
+      ws = new WebSocket(wsUrl(code, name));
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (dead) return;
+        setConnected(true);
+        if (pingTimer) clearInterval(pingTimer);
+        pingTimer = setInterval(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
+        }, 20000);
       };
-      try {
-        msg = JSON.parse(String(ev.data));
-      } catch {
-        return;
-      }
-      if (msg.type === "presence" && msg.names) setPresence(msg.names);
-      if (msg.type === "event:create" && msg.event) {
-        setRoom((prev) => (prev ? { ...prev, events: [...prev.events, msg.event!] } : prev));
-      }
-      if (msg.type === "event:thumb" && msg.eventId && msg.thumbUrl) {
-        setRoom((prev) =>
-          prev
-            ? {
-                ...prev,
-                events: prev.events.map((e) =>
-                  e.id === msg.eventId ? { ...e, thumbUrl: msg.thumbUrl! } : e,
-                ),
-              }
-            : prev,
-        );
-      }
-      if (msg.type === "room:update" && msg.room) setRoom(msg.room);
-    };
+
+      ws.onclose = () => {
+        setConnected(false);
+        wsRef.current = null;
+        if (pingTimer) clearInterval(pingTimer);
+        if (!dead) retryTimer = setTimeout(connect, 1500);
+      };
+
+      ws.onmessage = (ev) => {
+        let msg: {
+          type?: string;
+          names?: string[];
+          event?: EventItem;
+          eventId?: string;
+          thumbUrl?: string;
+          room?: Room;
+        };
+        try {
+          msg = JSON.parse(String(ev.data));
+        } catch {
+          return;
+        }
+        if (msg.type === "presence" && msg.names) setPresence(msg.names);
+        if (msg.type === "event:create" && msg.event) {
+          setRoom((prev) => {
+            if (!prev) return prev;
+            if (prev.events.some((e) => e.id === msg.event!.id)) return prev;
+            return { ...prev, events: [...prev.events, msg.event!] };
+          });
+        }
+        if (msg.type === "event:thumb" && msg.eventId && msg.thumbUrl) {
+          setRoom((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  events: prev.events.map((e) =>
+                    e.id === msg.eventId ? { ...e, thumbUrl: msg.thumbUrl! } : e,
+                  ),
+                }
+              : prev,
+          );
+        }
+        if (msg.type === "room:update" && msg.room) setRoom(msg.room);
+      };
+    }
+
+    connect();
 
     return () => {
       dead = true;
       if (pingTimer) clearInterval(pingTimer);
-      ws.close();
+      if (retryTimer) clearTimeout(retryTimer);
+      ws?.close();
       wsRef.current = null;
     };
   }, [joined, code, name]);
@@ -96,17 +120,38 @@ export function RoomPage() {
     setJoined(true);
   }
 
-  function sendNote(e: FormEvent) {
+  async function sendNote(e: FormEvent) {
     e.preventDefault();
     const body = note.trim();
-    if (!body || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(JSON.stringify({ type: "event:create", body }));
+    if (!body || !code) return;
     setNote("");
+    try {
+      const event = await postEvent(code, body, name);
+      setRoom((prev) =>
+        prev && !prev.events.some((x) => x.id === event.id)
+          ? { ...prev, events: [...prev.events, event] }
+          : prev,
+      );
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : "send failed");
+      setNote(body);
+    }
   }
 
-  function patchRoom(patch: Partial<Pick<Room, "title" | "severity" | "status" | "assignee">>) {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(JSON.stringify({ type: "room:update", ...patch }));
+  async function patchRoom(patch: Partial<Pick<Room, "title" | "severity" | "status" | "assignee">>) {
+    if (!code) return;
+    setRoom((prev) => (prev ? { ...prev, ...patch } : prev));
+    try {
+      const updated = await patchRoomHttp(code, patch);
+      setRoom(updated);
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : "update failed");
+      try {
+        setRoom(await getRoom(code));
+      } catch {
+        /* */
+      }
+    }
   }
 
   async function onUpload(file: File) {
@@ -158,17 +203,20 @@ export function RoomPage() {
           <input
             value={room.title}
             onChange={(e) => setRoom({ ...room, title: e.target.value })}
-            onBlur={(e) => patchRoom({ title: e.target.value })}
+            onBlur={(e) => void patchRoom({ title: e.target.value })}
             style={{ fontFamily: "var(--font-display)", fontSize: "1.35rem", fontWeight: 700 }}
           />
           <p className="muted" style={{ margin: "0.4rem 0 0" }}>
-            Share <button type="button" onClick={() => navigator.clipboard.writeText(shareUrl)}>copy link</button>
+            Share{" "}
+            <button type="button" onClick={() => navigator.clipboard.writeText(shareUrl)}>
+              copy link
+            </button>
           </p>
         </div>
         <div className="row">
           <select
             value={room.severity}
-            onChange={(e) => patchRoom({ severity: e.target.value as Severity })}
+            onChange={(e) => void patchRoom({ severity: e.target.value as Severity })}
             aria-label="Severity"
           >
             <option value="sev1">sev1</option>
@@ -178,7 +226,7 @@ export function RoomPage() {
           </select>
           <select
             value={room.status}
-            onChange={(e) => patchRoom({ status: e.target.value as Status })}
+            onChange={(e) => void patchRoom({ status: e.target.value as Status })}
             aria-label="Status"
           >
             <option value="investigating">investigating</option>
@@ -207,7 +255,7 @@ export function RoomPage() {
             ))
           )}
 
-          <form className="composer" onSubmit={sendNote}>
+          <form className="composer" onSubmit={(e) => void sendNote(e)}>
             <textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -244,7 +292,7 @@ export function RoomPage() {
               value={room.assignee}
               placeholder="Who owns this?"
               onChange={(e) => setRoom({ ...room, assignee: e.target.value })}
-              onBlur={(e) => patchRoom({ assignee: e.target.value })}
+              onBlur={(e) => void patchRoom({ assignee: e.target.value })}
             />
           </div>
           <div className="card">

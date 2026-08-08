@@ -45,6 +45,25 @@ export function getRoom(code: string) {
   return req<Room>(`/api/rooms/${code}`);
 }
 
+export function patchRoomHttp(
+  code: string,
+  patch: Partial<Pick<Room, "title" | "severity" | "status" | "assignee">>,
+) {
+  return req<Room>(`/api/rooms/${code}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+export function postEvent(code: string, body: string, author: string) {
+  return req<EventItem>(`/api/rooms/${code}/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ body, author, kind: "note" }),
+  });
+}
+
 export function getArchitecture() {
   return req<{ name: string; platform: string; services: ArchService[] }>("/api/architecture");
 }

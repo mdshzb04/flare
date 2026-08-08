@@ -87,7 +87,11 @@ export function Architecture() {
 
       {roomCode ? (
         <div className="card glow">
-          <BlastMap affected={room?.affected ?? []} title={`Blast radius · room ${roomCode}`} />
+          <BlastMap
+            affected={room?.affected ?? []}
+            blastRoot={room?.blastRoot}
+            title={`Blast radius · room ${roomCode}`}
+          />
           <p className="muted" style={{ margin: "0.75rem 0 0", fontSize: "0.8rem" }}>
             Toggle services in the{" "}
             <Link to={`/r/${roomCode}`}>war-room</Link> — this map auto-refreshes.

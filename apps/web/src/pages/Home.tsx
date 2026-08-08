@@ -54,12 +54,14 @@ export function Home() {
 
         <div className="card glow preview-card">
           <BlastMap
-            affected={["api", "db"]}
+            affected={["api", "db", "redis", "storage"]}
+            blastRoot="api"
             compact
             title="Blast radius preview"
           />
           <p className="muted" style={{ margin: "0.75rem 0 0", fontSize: "0.78rem" }}>
-            Mark a service down in a room — every connected tab pulses red. That’s the demo moment.
+            Click <strong>api</strong> in a room — impact cascades hop-by-hop to db, redis, storage.
+            Both tabs see it. Then mark resolved.
           </p>
         </div>
       </div>

@@ -13,13 +13,28 @@ import {
   wsUrl,
 } from "../api";
 import { BlastMap } from "../components/BlastMap";
+import { HOP_MS, cascadeFrom, resolveOrder, sleep } from "../lib/deps";
 
 const NAME_KEY = "flare:name";
 const LAST_ROOM_KEY = "flare:lastRoom";
+const ROLE_KEY = "flare:role";
+
+type Role = "host" | "teammate";
+
+function normalizeRoom(r: Room): Room {
+  return {
+    ...r,
+    affected: r.affected ?? [],
+    blastRoot: r.blastRoot ?? null,
+  };
+}
 
 export function RoomPage() {
   const { code = "" } = useParams();
   const [name, setName] = useState(() => localStorage.getItem(NAME_KEY) || "");
+  const [role, setRole] = useState<Role>(() =>
+    localStorage.getItem(ROLE_KEY) === "teammate" ? "teammate" : "host",
+  );
   const [joined, setJoined] = useState(false);
   const [room, setRoom] = useState<Room | null>(null);
   const [presence, setPresence] = useState<string[]>([]);
@@ -28,10 +43,13 @@ export function RoomPage() {
   const [connected, setConnected] = useState(false);
   const [flashSev, setFlashSev] = useState(false);
   const [flashStatus, setFlashStatus] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [localCount, setLocalCount] = useState<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const prevSev = useRef<string | null>(null);
   const prevStatus = useRef<string | null>(null);
+  const cascading = useRef(false);
 
   const shareUrl = useMemo(() => (code ? `${location.origin}/r/${code}` : ""), [code]);
 
@@ -70,7 +88,7 @@ export function RoomPage() {
 
     getRoom(code)
       .then((r) => {
-        if (!dead) setRoom({ ...r, affected: r.affected ?? [] });
+        if (!dead) setRoom(normalizeRoom(r));
       })
       .catch((e) => setErr(e instanceof Error ? e.message : "load failed"));
 
@@ -129,8 +147,9 @@ export function RoomPage() {
               : prev,
           );
         }
-        if (msg.type === "room:update" && msg.room) {
-          setRoom({ ...msg.room, affected: msg.room.affected ?? [] });
+        if (msg.type === "room:update" && msg.room && !cascading.current) {
+          setRoom(normalizeRoom(msg.room));
+          setLocalCount(null);
         }
       };
     }
@@ -151,6 +170,7 @@ export function RoomPage() {
     const n = name.trim().slice(0, 64);
     if (!n) return;
     localStorage.setItem(NAME_KEY, n);
+    localStorage.setItem(ROLE_KEY, role);
     setName(n);
     setJoined(true);
   }
@@ -174,30 +194,81 @@ export function RoomPage() {
   }
 
   async function patchRoom(
-    patch: Partial<Pick<Room, "title" | "severity" | "status" | "assignee" | "affected">>,
+    patch: Partial<Pick<Room, "title" | "severity" | "status" | "assignee" | "affected" | "blastRoot">>,
   ) {
-    if (!code) return;
-    setRoom((prev) => (prev ? { ...prev, ...patch } : prev));
+    if (!code) return normalizeRoom(room!);
+    setRoom((prev) => (prev ? normalizeRoom({ ...prev, ...patch }) : prev));
+    const updated = await patchRoomHttp(code, patch);
+    const norm = normalizeRoom(updated);
+    setRoom(norm);
+    return norm;
+  }
+
+  async function runCascade(root: string) {
+    if (!code || cascading.current) return;
+    const hops = cascadeFrom(root);
+    if (hops.length === 0) return;
+    cascading.current = true;
+    setBusy(true);
     try {
-      const updated = await patchRoomHttp(code, patch);
-      setRoom({ ...updated, affected: updated.affected ?? [] });
-    } catch (ex) {
-      setErr(ex instanceof Error ? ex.message : "update failed");
-      try {
-        const r = await getRoom(code);
-        setRoom({ ...r, affected: r.affected ?? [] });
-      } catch {
-        /* */
+      let built: string[] = [];
+      for (const hop of hops) {
+        built = [...built, hop];
+        setLocalCount(built.length);
+        setRoom((prev) =>
+          prev ? normalizeRoom({ ...prev, affected: built, blastRoot: root }) : prev,
+        );
+        await patchRoomHttp(code, { affected: built, blastRoot: root });
+        await sleep(HOP_MS);
       }
+      const final = await getRoom(code);
+      setRoom(normalizeRoom(final));
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : "cascade failed");
+    } finally {
+      cascading.current = false;
+      setBusy(false);
+      setLocalCount(null);
     }
   }
 
-  function toggleAffected(serviceId: string) {
-    if (!room) return;
-    const cur = new Set(room.affected ?? []);
-    if (cur.has(serviceId)) cur.delete(serviceId);
-    else cur.add(serviceId);
-    void patchRoom({ affected: [...cur] });
+  async function runResolve() {
+    if (!code || !room || cascading.current) return;
+    const order = resolveOrder(room.affected ?? []);
+    if (order.length === 0) return;
+    cascading.current = true;
+    setBusy(true);
+    try {
+      let left = [...(room.affected ?? [])];
+      for (const hop of order) {
+        left = left.filter((id) => id !== hop);
+        setLocalCount(left.length);
+        setRoom((prev) =>
+          prev
+            ? normalizeRoom({
+                ...prev,
+                affected: left,
+                blastRoot: left.length ? prev.blastRoot : null,
+                status: left.length === 0 ? "resolved" : prev.status,
+              })
+            : prev,
+        );
+        await patchRoomHttp(code, {
+          affected: left,
+          blastRoot: left.length ? room.blastRoot : null,
+          status: left.length === 0 ? "resolved" : room.status,
+        });
+        await sleep(HOP_MS);
+      }
+      const final = await getRoom(code);
+      setRoom(normalizeRoom(final));
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : "resolve failed");
+    } finally {
+      cascading.current = false;
+      setBusy(false);
+      setLocalCount(null);
+    }
   }
 
   async function onUpload(file: File) {
@@ -223,6 +294,17 @@ export function RoomPage() {
           maxLength={64}
           autoFocus
         />
+        <label className="muted" htmlFor="role">
+          Role
+        </label>
+        <select
+          id="role"
+          value={role}
+          onChange={(e) => setRole(e.target.value as Role)}
+        >
+          <option value="host">Host / judge — full blast map</option>
+          <option value="teammate">Teammate — focused checklist</option>
+        </select>
         <button className="primary" type="submit">
           Enter war-room
         </button>
@@ -235,6 +317,58 @@ export function RoomPage() {
   }
 
   const viewers = Math.max(presence.length, 1);
+  const affected = room.affected ?? [];
+
+  if (role === "teammate") {
+    return (
+      <>
+        <div className="topbar">
+          <div>
+            <div className="row" style={{ marginBottom: "0.4rem" }}>
+              <span className={`sev ${room.severity}`}>{room.severity}</span>
+              <span className="muted">{room.status}</span>
+              <span className="viewers">{viewers} viewing</span>
+            </div>
+            <h2 style={{ margin: 0, fontFamily: "var(--font-display)" }}>{room.title}</h2>
+          </div>
+          <button type="button" onClick={() => setRole("host")}>
+            Switch to host view
+          </button>
+        </div>
+        <div className="card glow" style={{ display: "grid", gap: "0.75rem" }}>
+          <h3 style={{ margin: 0, fontFamily: "var(--font-display)" }}>
+            {affected.length === 0 ? "Your services look clear" : "Your stack is in the blast radius"}
+          </h3>
+          {affected.length === 0 ? (
+            <p className="muted" style={{ margin: 0 }}>
+              Stand by. Host will cascade impact when a service is marked down.
+            </p>
+          ) : (
+            <ul className="stack-proof">
+              {affected.map((id) => (
+                <li key={id}>
+                  <strong>{id}</strong> is impacted — check logs, pause deploys, confirm ownership
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="muted" style={{ margin: 0, fontSize: "0.8rem" }}>
+            Live synced · {localCount ?? affected.length}/{6} services in radius
+          </p>
+        </div>
+        <section className="card timeline">
+          {room.events.map((ev) => (
+            <article key={ev.id} className="event">
+              <div className="meta">
+                {ev.author} · {new Date(ev.createdAt).toLocaleTimeString()}
+              </div>
+              <div>{ev.body}</div>
+            </article>
+          ))}
+        </section>
+      </>
+    );
+  }
 
   return (
     <>
@@ -289,22 +423,42 @@ export function RoomPage() {
             <option value="monitoring">monitoring</option>
             <option value="resolved">resolved</option>
           </select>
+          <button type="button" onClick={() => setRole("teammate")}>
+            Teammate view
+          </button>
         </div>
       </div>
 
-      <div className="card glow">
+      <div className="card glow" style={{ display: "grid", gap: "0.75rem" }}>
         <BlastMap
-          affected={room.affected ?? []}
+          affected={affected}
+          blastRoot={room.blastRoot}
           interactive
-          onToggle={toggleAffected}
+          busy={busy}
+          displayCount={localCount ?? undefined}
+          onMarkDown={(id) => void runCascade(id)}
           title="Blast radius"
         />
+        <div className="row">
+          <button
+            className="primary"
+            type="button"
+            disabled={busy || affected.length === 0}
+            onClick={() => void runResolve()}
+          >
+            Mark resolved — reverse cascade
+          </button>
+          <span className="muted" style={{ fontSize: "0.78rem" }}>
+            Demo: click <strong>api</strong> → watch hops → resolve
+          </span>
+        </div>
+        {err ? <p style={{ color: "var(--sev1)", margin: 0 }}>{err}</p> : null}
       </div>
 
       <div className="layout">
         <section className="card timeline">
           {room.events.length === 0 ? (
-            <p className="muted">No updates yet. First note sets the timeline.</p>
+            <p className="muted">No updates yet.</p>
           ) : (
             room.events.map((ev) => (
               <article key={ev.id} className="event">
@@ -348,7 +502,6 @@ export function RoomPage() {
                 }}
               />
             </div>
-            {err ? <p style={{ color: "var(--sev1)", margin: 0 }}>{err}</p> : null}
           </form>
         </section>
 

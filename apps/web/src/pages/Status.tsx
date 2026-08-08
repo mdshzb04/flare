@@ -48,7 +48,11 @@ export function StatusPage() {
       </p>
 
       <div className="card glow">
-        <BlastMap affected={room.affected ?? []} title="Blast radius" />
+        <BlastMap
+          affected={room.affected ?? []}
+          blastRoot={room.blastRoot}
+          title="Blast radius"
+        />
       </div>
 
       <div className="card timeline" style={{ minHeight: 0 }}>

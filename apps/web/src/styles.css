@@ -424,3 +424,39 @@ button.blast-node:hover { border-color: #4a627a; transform: translateY(-1px); }
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--sev1) 25%, transparent);
 }
 .arch-item.hit-border { border-color: color-mix(in srgb, var(--sev1) 55%, var(--line)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--sev1) 25%, transparent); }
+
+.impact-counter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.75rem;
+  align-items: baseline;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  background: var(--bg0);
+  font-size: 0.85rem;
+}
+.impact-counter strong {
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  color: var(--accent);
+  line-height: 1;
+}
+.impact-counter em {
+  font-style: normal;
+  color: var(--muted);
+  margin-left: auto;
+}
+.blast-node.ok {
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--line));
+}
+.blast-node.just-hit {
+  animation: nodePop 0.45s ease-out;
+}
+@keyframes nodePop {
+  0% { transform: scale(0.92); filter: brightness(1.4); }
+  100% { transform: scale(1); filter: none; }
+}
+.blast-busy .blast-node { cursor: wait; }
+.blast-node.hit .blast-ring {
+  animation-delay: calc(var(--hop, 0) * 0.05s);
+}

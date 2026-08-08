@@ -21,6 +21,7 @@ export type Room = {
   status: Status;
   assignee: string;
   affected: string[];
+  blastRoot?: string | null;
   createdAt: string;
   updatedAt: string;
   events: EventItem[];
@@ -55,7 +56,7 @@ export function getRoom(code: string) {
 
 export function patchRoomHttp(
   code: string,
-  patch: Partial<Pick<Room, "title" | "severity" | "status" | "assignee" | "affected">>,
+  patch: Partial<Pick<Room, "title" | "severity" | "status" | "assignee" | "affected" | "blastRoot">>,
 ) {
   return req<Room>(`/api/rooms/${code}`, {
     method: "PATCH",

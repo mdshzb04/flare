@@ -16,6 +16,7 @@ type RoomRow = {
   status: Status;
   assignee: string;
   affected: string[] | null;
+  blast_root: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -108,6 +109,7 @@ function serializeRoom(room: RoomRow, events: EventRow[]) {
     status: room.status,
     assignee: room.assignee,
     affected: room.affected ?? [],
+    blastRoot: room.blast_root || null,
     createdAt: room.created_at,
     updatedAt: room.updated_at,
     events: events.map((e) => ({
@@ -185,6 +187,29 @@ app.post("/api/rooms", async (c) => {
     INSERT INTO rooms (id, code, title)
     VALUES (${roomId}, ${roomCode}, ${title})
   `;
+  const seeds = [
+    {
+      id: id(),
+      body: "Checked pgbouncer — connection pool exhausted at 14:32 UTC, restarting service.",
+      author: "oncall",
+    },
+    {
+      id: id(),
+      body: "Confirmed — Valkey pub/sub backlog climbing. Investigating worker lag on job consumers.",
+      author: "platform",
+    },
+    {
+      id: id(),
+      body: "Frontend still up; API error rate ~12%. Holding sev2 until blast radius is mapped.",
+      author: "sre",
+    },
+  ];
+  for (const s of seeds) {
+    await sql`
+      INSERT INTO events (id, room_id, kind, body, author)
+      VALUES (${s.id}, ${roomId}, ${"note"}, ${s.body}, ${s.author})
+    `;
+  }
   return c.json({ code: roomCode, urlPath: `/r/${roomCode}` }, 201);
 });
 
@@ -202,6 +227,7 @@ app.patch("/api/rooms/:code", async (c) => {
     status?: Status;
     assignee?: string;
     affected?: string[];
+    blastRoot?: string | null;
   };
   const data = await loadRoom(roomCode);
   if (!data) return c.json({ error: "not_found" }, 404);
@@ -211,11 +237,18 @@ app.patch("/api/rooms/:code", async (c) => {
   const status = body.status ?? data.room.status;
   const assignee = body.assignee?.slice(0, 64) ?? data.room.assignee;
   const affected = normalizeAffected(body.affected, data.room.affected ?? []);
+  const blastRoot =
+    body.blastRoot === null
+      ? ""
+      : body.blastRoot !== undefined
+        ? String(body.blastRoot).slice(0, 32)
+        : data.room.blast_root || "";
 
   const [room] = await sql<RoomRow[]>`
     UPDATE rooms
     SET title = ${title}, severity = ${severity}, status = ${status},
-        assignee = ${assignee}, affected = ${affected}, updated_at = NOW()
+        assignee = ${assignee}, affected = ${affected}, blast_root = ${blastRoot},
+        updated_at = NOW()
     WHERE id = ${data.room.id}
     RETURNING *
   `;
@@ -371,6 +404,7 @@ async function boot() {
           status?: string;
           assignee?: string;
           affected?: string[];
+          blastRoot?: string | null;
         };
         try {
           msg = JSON.parse(String(raw));
@@ -418,10 +452,17 @@ async function boot() {
           const status = (msg.status ?? data.room.status) as Status;
           const assignee = (msg.assignee ?? data.room.assignee).slice(0, 64);
           const affected = normalizeAffected(msg.affected, data.room.affected ?? []);
+          const blastRoot =
+            msg.blastRoot === null
+              ? ""
+              : msg.blastRoot !== undefined
+                ? String(msg.blastRoot).slice(0, 32)
+                : data.room.blast_root || "";
           const [room] = await sql<RoomRow[]>`
             UPDATE rooms
             SET title = ${title}, severity = ${severity}, status = ${status},
-                assignee = ${assignee}, affected = ${affected}, updated_at = NOW()
+                assignee = ${assignee}, affected = ${affected}, blast_root = ${blastRoot},
+                updated_at = NOW()
             WHERE id = ${data.room.id}
             RETURNING *
           `;

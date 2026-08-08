@@ -14,16 +14,44 @@ Live multiplayer incident war-room. Share a room link — severity, timeline, an
 
 ## Architecture (Zerops)
 
-| Service | Role |
-|---------|------|
-| `frontend` | Static React SPA (public) |
-| `api` | Bun + Hono HTTP + WebSocket (public) |
-| `worker` | Thumbnail jobs from Valkey queue (private) |
-| `db` | PostgreSQL (private) |
-| `redis` | Valkey pub/sub + queue (private) |
-| `storage` | S3-compatible object storage |
+Six services. Public edge = `frontend` + `api`. Everything else stays on the Zerops private network.
 
-Private network between api / worker / db / redis / storage.
+```mermaid
+flowchart TB
+  subgraph publicEdge [Public]
+    User([Judge / teammate])
+    FE[frontend<br/>React static SPA]
+    API[api<br/>Bun + Hono + WebSocket]
+  end
+
+  subgraph privateNet [Zerops private network]
+    DB[(db<br/>PostgreSQL)]
+    VK[(redis<br/>Valkey pub/sub + queue)]
+    S3[(storage<br/>S3 object store)]
+    WRK[worker<br/>Bun + Sharp thumbnails]
+  end
+
+  User -->|HTTPS| FE
+  User -->|HTTPS + WSS| API
+  API -->|rooms events| DB
+  API -->|fan-out + jobs| VK
+  API -->|upload| S3
+  VK -->|BRPOP thumb jobs| WRK
+  WRK -->|write thumb| S3
+  WRK -->|thumb_key| DB
+  WRK -->|notify| API
+```
+
+**Data path (demo):** browser → `api` WS → Valkey publish → other tabs · upload → `storage` → Valkey queue → `worker` thumbnail → WS `event:thumb`.
+
+| Service | Role | Exposure |
+|---------|------|----------|
+| `frontend` | React SPA | public |
+| `api` | HTTP + WebSocket | public |
+| `worker` | Thumbnail jobs | private |
+| `db` | Postgres persistence | private |
+| `redis` | Pub/sub + queue | private |
+| `storage` | Screenshots / thumbs | private API, public object URLs |
 
 ## Stack
 

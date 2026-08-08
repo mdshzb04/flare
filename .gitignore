@@ -1,0 +1,10 @@
+node_modules
+dist
+.bun
+.env
+.env.local
+*.log
+.DS_Store
+apps/web/dist
+apps/api/dist
+apps/worker/dist

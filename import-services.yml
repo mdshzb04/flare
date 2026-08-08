@@ -1,0 +1,46 @@
+project:
+  name: flare
+  tags:
+    - zerops-challenge
+
+services:
+  - hostname: db
+    type: postgresql@16
+    mode: NON_HA
+    priority: 100
+
+  - hostname: redis
+    type: valkey@7.2
+    mode: NON_HA
+    priority: 90
+
+  - hostname: storage
+    type: object-storage
+    objectStorageSize: 2
+    objectStoragePolicy: public-read
+    objectStorageBuckets:
+      - name: flare
+    priority: 80
+
+  - hostname: api
+    type: bun@1.2
+    minContainers: 1
+    maxContainers: 2
+    enableSubdomainAccess: true
+    ports:
+      - port: 3000
+        httpSupport: true
+    priority: 50
+
+  - hostname: worker
+    type: bun@1.2
+    minContainers: 1
+    maxContainers: 1
+    priority: 40
+
+  - hostname: frontend
+    type: static
+    minContainers: 1
+    maxContainers: 1
+    enableSubdomainAccess: true
+    priority: 30

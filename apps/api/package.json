@@ -1,0 +1,18 @@
+{
+  "name": "@flare/api",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "start": "bun run dist/index.js",
+    "build": "bun build src/index.ts --outfile dist/index.js --target bun --minify",
+    "check": "bun run src/selfcheck.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.758.0",
+    "@aws-sdk/s3-request-presigner": "^3.758.0",
+    "hono": "^4.7.2",
+    "ioredis": "^5.5.0",
+    "postgres": "^3.4.5"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@flare/worker",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "start": "bun run dist/index.js",
+    "build": "bun build src/index.ts --outfile dist/index.js --target bun --minify"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.758.0",
+    "ioredis": "^5.5.0",
+    "postgres": "^3.4.5",
+    "sharp": "^0.33.5"
+  }
+}

@@ -76,8 +76,8 @@ zerops:
       base: bun@1.2
       envVariables:
         BUN_INSTALL: ./.bun
-        VITE_API_URL: ${RUNTIME_API_PUBLIC_URL}
-        VITE_WS_URL: ${RUNTIME_WS_PUBLIC_URL}
+        VITE_API_URL: https://api-2b1c-3000.prg1.zerops.app
+        VITE_WS_URL: wss://api-2b1c-3000.prg1.zerops.app/ws
       buildCommands:
         - cd apps/web && bun install && bun run build
       deployFiles:

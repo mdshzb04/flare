@@ -2,6 +2,10 @@
 
 Live multiplayer incident war-room. Share a room link — severity, timeline, and presence sync across tabs. Screenshots upload to object storage; a worker builds thumbnails.
 
+**Live:** https://frontend-2b1c.prg1.zerops.app  
+**API:** https://api-2b1c-3000.prg1.zerops.app  
+**Repo:** https://github.com/mdshzb04/flare
+
 **Zerops Challenge entry.** Six services. Not a Hello World.
 
 ## Live demo story (60s)

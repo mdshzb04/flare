@@ -65,8 +65,8 @@ zerops:
         S3_BUCKET: ${storage_bucketName}
         API_INTERNAL_URL: http://api:3000
         INTERNAL_SECRET: flare-zerops-challenge
-      # bun run <path> can no-op as a package script name; exec keeps PID 1 alive
-      start: bun install && exec bun ./src/index.ts
+      # Zerops wraps start with `exec`; use a script so install + long-run both happen
+      start: sh ./start.sh
 
   - setup: frontend
     build:

@@ -8,11 +8,13 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { matchRule, type RuleTrigger } from "./automation";
 import {
   ROOM_TTL_MS,
   TICK_MS,
   newRoomSim,
   tickRoom,
+  type MetricsPayload,
   type RoomSim,
 } from "./metrics";
 
@@ -59,6 +61,8 @@ const s3 = new S3Client({
 });
 
 const rooms = new Map<string, RoomSim>();
+const firedRules = new Map<string, number>(); // ruleId -> last fire ts
+let lastPayload: MetricsPayload | null = null;
 
 function roomChannel(roomCode: string) {
   return `${CHANNEL}:${roomCode}`;
@@ -158,19 +162,94 @@ async function metricsLoop() {
   console.log("flare-worker metrics on", `${CHANNEL}:*`);
   for (;;) {
     const now = Date.now();
+    // Always keep a baseline sim ticking for dashboard even with no rooms
+    if (rooms.size === 0) {
+      const orphan = newRoomSim([]);
+      const payload = tickRoom(orphan, now);
+      lastPayload = payload;
+      await redisPub.set("flare:metrics:latest", JSON.stringify(payload));
+    }
     for (const [code, sim] of rooms) {
       if (now - sim.lastActivity > ROOM_TTL_MS) {
         rooms.delete(code);
         continue;
       }
       const payload = tickRoom(sim, now);
+      lastPayload = payload;
       try {
         await redisPub.publish(roomChannel(code), JSON.stringify(payload));
+        await redisPub.set("flare:metrics:latest", JSON.stringify(payload));
+        // Threshold timeline mark (rate-limited)
+        if (payload.errorRate > 8 || payload.latencyMs > 180) {
+          const key = `thr:${code}`;
+          const last = firedRules.get(key) || 0;
+          if (now - last > 20_000) {
+            firedRules.set(key, now);
+            void fetch(`${apiBase}/api/internal/timeline`, {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-flare-secret": secret,
+              },
+              body: JSON.stringify({
+                roomCode: code,
+                kind: "metric.threshold",
+                summary: `errorRate ${payload.errorRate}% · latency ${payload.latencyMs}ms · q ${payload.queueDepth}`,
+                payload: {
+                  errorRate: payload.errorRate,
+                  latencyMs: payload.latencyMs,
+                  queueDepth: payload.queueDepth,
+                  degradedPct: payload.degradedPct,
+                },
+              }),
+            }).catch(() => {});
+          }
+        }
       } catch (err) {
         console.error("metrics publish failed", code, err);
       }
     }
     await Bun.sleep(TICK_MS);
+  }
+}
+
+async function automationLoop() {
+  console.log("flare-worker automation loop");
+  for (;;) {
+    try {
+      if (lastPayload) {
+        const rules = await sql<
+          { id: string; name: string; enabled: boolean; trigger: RuleTrigger; actions: string[] }[]
+        >`SELECT id, name, enabled, trigger, actions FROM automation_rules WHERE enabled = true`;
+        const snap = {
+          errorRate: lastPayload.errorRate,
+          latencyMs: lastPayload.latencyMs,
+          queueDepth: lastPayload.queueDepth,
+          degradedPct: lastPayload.degradedPct,
+        };
+        for (const rule of rules) {
+          if (!matchRule(rule.trigger, snap)) continue;
+          const last = firedRules.get(rule.id) || 0;
+          if (Date.now() - last < 60_000) continue;
+          firedRules.set(rule.id, Date.now());
+          await fetch(`${apiBase}/api/internal/automation-fire`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-flare-secret": secret,
+            },
+            body: JSON.stringify({
+              ruleName: rule.name,
+              metrics: snap,
+              actions: rule.actions,
+            }),
+          });
+        }
+      }
+    } catch (err) {
+      console.error("automation loop", err);
+    }
+    await Bun.sleep(5000);
   }
 }
 
@@ -189,7 +268,7 @@ async function thumbLoop() {
 }
 
 async function main() {
-  await Promise.all([thumbLoop(), metricsLoop()]);
+  await Promise.all([thumbLoop(), metricsLoop(), automationLoop()]);
 }
 
 main().catch((err) => {

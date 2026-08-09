@@ -21,6 +21,7 @@ const a = tickRoom(sim, 1_000, () => 0.5);
 const b = tickRoom(sim, 2_000, () => 0.5);
 assert.ok(b.reqTotal > a.reqTotal, "reqTotal must climb");
 assert.equal(a.type, "metrics");
+assert.equal(a.source, "demo");
 
 sim.affected = ["api"];
 let last = a.errorRate;

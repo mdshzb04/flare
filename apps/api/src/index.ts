@@ -2,12 +2,14 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { ServerWebSocket } from "bun";
 import { migrate, sql } from "./db";
-import { notifyAffectedTransition } from "./discord";
+import { notifyAffectedTransition } from "./integrations";
+import { registerProductRoutes } from "./product";
+import { appendIncidentEvent, serializeIncidentEvent } from "./timeline";
 import { CHANNEL, QUEUE, ensureRedis, redis, redisSub } from "./redis";
 import { ensureBucket, putObject, publicUrl } from "./s3";
 
 type Severity = "sev1" | "sev2" | "sev3" | "sev4";
-type Status = "investigating" | "identified" | "monitoring" | "resolved";
+type Status = "investigating" | "identified" | "monitoring" | "mitigating" | "resolved";
 
 type RoomRow = {
   id: string;
@@ -18,6 +20,8 @@ type RoomRow = {
   assignee: string;
   affected: string[] | null;
   blast_root: string | null;
+  detection_source?: string;
+  resolved_at?: Date | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -132,10 +136,18 @@ app.use(
   "*",
   cors({
     origin: corsOrigin === "*" ? "*" : corsOrigin.split(","),
-    allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
-    allowHeaders: ["Content-Type"],
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "OPTIONS"],
+    allowHeaders: ["Content-Type", "x-flare-secret"],
   }),
 );
+
+registerProductRoutes(app, {
+  publish,
+  loadRoom: loadRoom as never,
+  serializeRoom: serializeRoom as never,
+  id,
+  code,
+});
 
 app.get("/health", async (c) => {
   let db = false;
@@ -180,13 +192,14 @@ app.get("/api/architecture", (c) =>
 );
 
 app.post("/api/rooms", async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { title?: string };
+  const body = (await c.req.json().catch(() => ({}))) as { title?: string; detectionSource?: string };
   const roomId = id();
   const roomCode = code();
   const title = (body.title || "Untitled incident").slice(0, 120);
+  const detectionSource = (body.detectionSource || "manual").slice(0, 32);
   await sql`
-    INSERT INTO rooms (id, code, title)
-    VALUES (${roomId}, ${roomCode}, ${title})
+    INSERT INTO rooms (id, code, title, detection_source)
+    VALUES (${roomId}, ${roomCode}, ${title}, ${detectionSource})
   `;
   const seeds = [
     {
@@ -211,6 +224,9 @@ app.post("/api/rooms", async (c) => {
       VALUES (${s.id}, ${roomId}, ${"note"}, ${s.body}, ${s.author})
     `;
   }
+  await appendIncidentEvent(roomId, "incident.created", `Incident opened: ${title}`, {
+    detectionSource,
+  });
   return c.json({ code: roomCode, urlPath: `/r/${roomCode}` }, 201);
 });
 
@@ -246,10 +262,13 @@ app.patch("/api/rooms/:code", async (c) => {
         ? String(body.blastRoot).slice(0, 32)
         : data.room.blast_root || "";
 
+  const resolvedAt =
+    status === "resolved" ? new Date() : status !== "resolved" ? null : data.room.resolved_at;
   const [room] = await sql<RoomRow[]>`
     UPDATE rooms
     SET title = ${title}, severity = ${severity}, status = ${status},
         assignee = ${assignee}, affected = ${affected}, blast_root = ${blastRoot},
+        resolved_at = CASE WHEN ${status} = 'resolved' THEN COALESCE(resolved_at, NOW()) ELSE NULL END,
         updated_at = NOW()
     WHERE id = ${data.room.id}
     RETURNING *
@@ -257,7 +276,54 @@ app.patch("/api/rooms/:code", async (c) => {
   const serialized = serializeRoom(room, data.events);
   const payload = { type: "room:update", room: serialized };
   await publish(roomCode, payload);
-  void notifyAffectedTransition(roomCode, prevAffected, serialized);
+
+  // Timeline: cascade hops + status
+  if (affected.length > prevAffected.length) {
+    const added = affected.filter((a) => !prevAffected.includes(a));
+    for (const svc of added) {
+      const ev = await appendIncidentEvent(
+        room.id,
+        "cascade.hop",
+        `${svc} entered blast radius`,
+        { service: svc, affected },
+      );
+      await publish(roomCode, { type: "timeline:append", event: serializeIncidentEvent(ev) });
+    }
+    if (prevAffected.length === 0) {
+      const ev = await appendIncidentEvent(
+        room.id,
+        "service.degraded",
+        `Cascade started at ${blastRoot || added[0]}`,
+        { blastRoot, affected },
+      );
+      await publish(roomCode, { type: "timeline:append", event: serializeIncidentEvent(ev) });
+      await publish(roomCode, { type: "activity", text: "Cascade started" });
+    }
+  } else if (affected.length < prevAffected.length) {
+    const removed = prevAffected.filter((a) => !affected.includes(a));
+    for (const svc of removed) {
+      const ev = await appendIncidentEvent(room.id, "affected.changed", `${svc} recovered`, {
+        service: svc,
+      });
+      await publish(roomCode, { type: "timeline:append", event: serializeIncidentEvent(ev) });
+    }
+  }
+  if (status !== data.room.status) {
+    const ev = await appendIncidentEvent(room.id, `status.${status}`, `Status → ${status}`);
+    await publish(roomCode, { type: "timeline:append", event: serializeIncidentEvent(ev) });
+  }
+
+  void notifyAffectedTransition(roomCode, prevAffected, serialized).then(async () => {
+    if (prevAffected.length === 0 && affected.length > 0) {
+      const ev = await appendIncidentEvent(room.id, "alert.sent", "Outbound alert fired (service.degraded)");
+      await publish(roomCode, { type: "timeline:append", event: serializeIncidentEvent(ev) });
+      await publish(roomCode, { type: "activity", text: "Discord/webhook alert sent" });
+    } else if (prevAffected.length > 0 && affected.length === 0) {
+      const ev = await appendIncidentEvent(room.id, "alert.sent", "All-clear alert fired");
+      await publish(roomCode, { type: "timeline:append", event: serializeIncidentEvent(ev) });
+    }
+  });
+  void resolvedAt;
   return c.json(serialized);
 });
 
@@ -398,6 +464,10 @@ async function boot() {
       open(ws) {
         addSocket(ws.data.roomCode, ws);
         void publish(ws.data.roomCode, { type: "presence", names: presence(ws.data.roomCode) });
+        void publish(ws.data.roomCode, {
+          type: "activity",
+          text: `${ws.data.name} joined the war room`,
+        });
       },
       async message(ws, raw) {
         let msg: {
@@ -476,6 +546,15 @@ async function boot() {
           `;
           const serialized = serializeRoom(room, events);
           await publish(roomCode, { type: "room:update", room: serialized });
+          if (affected.length > prevAffected.length) {
+            const added = affected.filter((a) => !prevAffected.includes(a));
+            for (const svc of added) {
+              const ev = await appendIncidentEvent(room.id, "cascade.hop", `${svc} entered blast radius`, {
+                service: svc,
+              });
+              await publish(roomCode, { type: "timeline:append", event: serializeIncidentEvent(ev) });
+            }
+          }
           void notifyAffectedTransition(roomCode, prevAffected, serialized);
         }
       },

@@ -19,6 +19,7 @@ export type MetricsPayload = {
   queueDepth: number;
   degradedPct: number;
   reqTotal: number;
+  source: "demo";
 };
 
 const WEIGHTS: Record<string, number> = {
@@ -93,5 +94,6 @@ export function tickRoom(sim: RoomSim, now = Date.now(), rand = Math.random): Me
     queueDepth: Math.round(sim.queueDepth),
     degradedPct: degradedPct(sim.affected.length, sim.errorRate, sim.latencyMs, sim.queueDepth),
     reqTotal: sim.reqCount,
+    source: "demo",
   };
 }

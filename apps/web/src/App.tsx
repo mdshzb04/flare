@@ -1,26 +1,34 @@
-import { Link, Route, Routes } from "react-router-dom";
-import { Home } from "./pages/Home";
-import { RoomPage } from "./pages/Room";
+import { Navigate, Route, Routes } from "react-router-dom";
+import { AppShell } from "./layout/AppShell";
 import { Architecture } from "./pages/Architecture";
+import { Automation } from "./pages/Automation";
+import { Dashboard } from "./pages/Dashboard";
+import { IncidentDetail } from "./pages/IncidentDetail";
+import { Incidents } from "./pages/Incidents";
+import { Integrations } from "./pages/Integrations";
+import { RoomPage } from "./pages/Room";
+import { ServiceDetail } from "./pages/ServiceDetail";
+import { Services } from "./pages/Services";
+import { Settings } from "./pages/Settings";
 import { StatusPage } from "./pages/Status";
 
 export function App() {
   return (
-    <div className="shell">
-      <header className="site-header">
-        <Link className="brand" to="/">
-          Fla<span>re</span>
-        </Link>
-        <nav className="nav-links">
-          <Link to="/architecture">Architecture</Link>
-        </nav>
-      </header>
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/r/:code" element={<RoomPage />} />
-        <Route path="/s/:code" element={<StatusPage />} />
+    <Routes>
+      <Route element={<AppShell />}>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/incidents" element={<Incidents />} />
+        <Route path="/incidents/:code" element={<IncidentDetail />} />
+        <Route path="/services" element={<Services />} />
+        <Route path="/services/:id" element={<ServiceDetail />} />
+        <Route path="/integrations" element={<Integrations />} />
+        <Route path="/automation" element={<Automation />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="/architecture" element={<Architecture />} />
-      </Routes>
-    </div>
+      </Route>
+      <Route path="/r/:code" element={<RoomPage />} />
+      <Route path="/s/:code" element={<StatusPage />} />
+      <Route path="/home" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }

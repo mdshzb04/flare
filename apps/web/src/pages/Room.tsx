@@ -1,18 +1,24 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   EventItem,
+  Investigation,
   Room,
   Severity,
   Status,
+  TimelineEvent,
   eventPath,
+  getIncident,
   getRoom,
+  incidentAction,
   patchRoomHttp,
   postEvent,
   uploadFile,
   wsUrl,
 } from "../api";
 import { BlastMap, type LiveMetrics } from "../components/BlastMap";
+import { InvestigatorPanel } from "../components/InvestigatorPanel";
+import { Timeline } from "../components/Timeline";
 import { HOP_MS, cascadeFrom, resolveOrder, sleep } from "../lib/deps";
 
 const NAME_KEY = "flare:name";
@@ -31,6 +37,7 @@ function normalizeRoom(r: Room): Room {
 
 export function RoomPage() {
   const { code = "" } = useParams();
+  const [params] = useSearchParams();
   const [name, setName] = useState(() => localStorage.getItem(NAME_KEY) || "");
   const [role, setRole] = useState<Role>(() =>
     localStorage.getItem(ROLE_KEY) === "teammate" ? "teammate" : "host",
@@ -46,11 +53,15 @@ export function RoomPage() {
   const [busy, setBusy] = useState(false);
   const [localCount, setLocalCount] = useState<number | null>(null);
   const [metrics, setMetrics] = useState<LiveMetrics | null>(null);
+  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const [activity, setActivity] = useState<string[]>([]);
+  const [report, setReport] = useState<Investigation | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const prevSev = useRef<string | null>(null);
   const prevStatus = useRef<string | null>(null);
   const cascading = useRef(false);
+  const demoStarted = useRef(false);
 
   const shareUrl = useMemo(() => (code ? `${location.origin}/r/${code}` : ""), [code]);
 
@@ -92,6 +103,13 @@ export function RoomPage() {
         if (!dead) setRoom(normalizeRoom(r));
       })
       .catch((e) => setErr(e instanceof Error ? e.message : "load failed"));
+    getIncident(code)
+      .then((d) => {
+        if (dead) return;
+        setTimeline(d.timeline);
+        setReport(d.investigation);
+      })
+      .catch(() => {});
 
     function connect() {
       if (dead) return;
@@ -118,10 +136,11 @@ export function RoomPage() {
         let msg: {
           type?: string;
           names?: string[];
-          event?: EventItem;
+          event?: EventItem | TimelineEvent;
           eventId?: string;
           thumbUrl?: string;
           room?: Room;
+          text?: string;
           rps?: number;
           latencyMs?: number;
           errorRate?: number;
@@ -136,6 +155,16 @@ export function RoomPage() {
           return;
         }
         if (msg.type === "presence" && msg.names) setPresence(msg.names);
+        if (msg.type === "activity" && msg.text) {
+          setActivity((prev) => [msg.text!, ...prev].slice(0, 40));
+        }
+        if (msg.type === "timeline:append" && msg.event && "summary" in msg.event) {
+          const te = msg.event as TimelineEvent;
+          setTimeline((prev) => (prev.some((t) => t.id === te.id) ? prev : [...prev, te]));
+          void getIncident(code)
+            .then((d) => setReport(d.investigation))
+            .catch(() => {});
+        }
         if (
           msg.type === "metrics" &&
           typeof msg.latencyMs === "number" &&
@@ -156,11 +185,12 @@ export function RoomPage() {
             ts: msg.ts,
           });
         }
-        if (msg.type === "event:create" && msg.event) {
+        if (msg.type === "event:create" && msg.event && "body" in msg.event) {
+          const noteEv = msg.event as EventItem;
           setRoom((prev) => {
             if (!prev) return prev;
-            if (prev.events.some((e) => e.id === msg.event!.id)) return prev;
-            return { ...prev, events: [...prev.events, msg.event!] };
+            if (prev.events.some((e) => e.id === noteEv.id)) return prev;
+            return { ...prev, events: [...prev.events, noteEv] };
           });
         }
         if (msg.type === "event:thumb" && msg.eventId && msg.thumbUrl) {
@@ -192,6 +222,13 @@ export function RoomPage() {
       wsRef.current = null;
     };
   }, [joined, code, name]);
+
+  useEffect(() => {
+    if (!joined || !room || demoStarted.current || params.get("demo") !== "1") return;
+    if ((room.affected ?? []).length > 0) return;
+    demoStarted.current = true;
+    void runCascade("api");
+  }, [joined, room?.id, params]);
 
   function join(e: FormEvent) {
     e.preventDefault();
@@ -399,9 +436,12 @@ export function RoomPage() {
   }
 
   return (
-    <>
+    <div className="shell product-shell">
       <div className="topbar">
         <div>
+          <p className="muted" style={{ margin: "0 0 0.35rem" }}>
+            <Link to="/">Dashboard</Link> · <Link to={`/incidents/${code}`}>Incident</Link> · war room
+          </p>
           <div className="row" style={{ marginBottom: "0.4rem" }}>
             <span className={`sev ${room.severity} ${flashSev ? "flash" : ""}`}>{room.severity}</span>
             <span className={`muted ${flashStatus ? "flash" : ""}`}>{room.status}</span>
@@ -470,6 +510,20 @@ export function RoomPage() {
         />
         <div className="row">
           <button
+            type="button"
+            disabled={busy}
+            onClick={() => void incidentAction(code, "investigate", { author: name })}
+          >
+            Investigate
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void incidentAction(code, "alert", { author: name })}
+          >
+            Send alert
+          </button>
+          <button
             className="primary"
             type="button"
             disabled={busy || affected.length === 0}
@@ -484,8 +538,19 @@ export function RoomPage() {
         {err ? <p style={{ color: "var(--sev1)", margin: 0 }}>{err}</p> : null}
       </div>
 
+      <div className="split-2">
+        <section className="card">
+          <h3>Incident timeline</h3>
+          <Timeline items={timeline} />
+        </section>
+        <section className="card">
+          <InvestigatorPanel code={code} report={report} />
+        </section>
+      </div>
+
       <div className="layout">
         <section className="card timeline">
+          <h3>Notes</h3>
           {room.events.length === 0 ? (
             <p className="muted">No updates yet.</p>
           ) : (
@@ -545,7 +610,7 @@ export function RoomPage() {
             />
           </div>
           <div className="card">
-            <h3 style={{ marginTop: 0, fontFamily: "var(--font-display)" }}>On call</h3>
+            <h3 style={{ marginTop: 0, fontFamily: "var(--font-display)" }}>Participants</h3>
             <ul className="presence" style={{ paddingLeft: "1.1rem", margin: 0 }}>
               {presence.length === 0 ? <li className="muted">waiting…</li> : null}
               {presence.map((n) => (
@@ -553,8 +618,17 @@ export function RoomPage() {
               ))}
             </ul>
           </div>
+          <div className="card">
+            <h3 style={{ marginTop: 0, fontFamily: "var(--font-display)" }}>Activity</h3>
+            <ul className="svc-list">
+              {activity.length === 0 ? <li className="muted">—</li> : null}
+              {activity.map((a, i) => (
+                <li key={`${a}-${i}`}>{a}</li>
+              ))}
+            </ul>
+          </div>
         </aside>
       </div>
-    </>
+    </div>
   );
 }

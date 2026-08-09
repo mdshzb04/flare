@@ -3,7 +3,25 @@
  * Run: bun run --cwd apps/worker check
  */
 import assert from "node:assert/strict";
+import { isDegraded, isRecovered, type LiveSnap } from "./liveMonitor";
 import { degradedPct, newRoomSim, stress, tickRoom } from "./metrics";
+
+const baseLive: LiveSnap = {
+  errorRate: 0,
+  latencyMs: 40,
+  queueDepth: 0,
+  degradedPct: 0,
+  rps: 1,
+  requestCount: 10,
+  errorCount: 0,
+  availability: 1,
+  source: "live",
+  label: "LIVE",
+  ts: 0,
+  windowSec: 120,
+};
+assert.equal(isDegraded({ ...baseLive, errorRate: 40, availability: 0.5 }), true);
+assert.equal(isRecovered(baseLive), true);
 
 assert.equal(stress([]), 0);
 assert.ok(stress(["api"]) >= 1);

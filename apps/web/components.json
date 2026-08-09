@@ -1,0 +1,9 @@
+{
+  "$schema": "https://www.originkit.dev/schema/components.json",
+  "baseUrl": "https://mcp.originkit.dev",
+  "componentsDir": "src/components/originkit",
+  "alias": "@/components/originkit",
+  "typescript": true,
+  "stack": "vite",
+  "styling": "css"
+}

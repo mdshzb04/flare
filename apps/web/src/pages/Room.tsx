@@ -19,6 +19,7 @@ import {
 import { BlastMap, type LiveMetrics } from "../components/BlastMap";
 import { InvestigatorPanel } from "../components/InvestigatorPanel";
 import { Timeline } from "../components/Timeline";
+import { UrlCheckRoomView } from "../components/UrlCheckRoomView";
 import { HOP_MS, cascadeFrom, resolveOrder, sleep } from "../lib/deps";
 
 const NAME_KEY = "flare:name";
@@ -32,7 +33,12 @@ function normalizeRoom(r: Room): Room {
     ...r,
     affected: r.affected ?? [],
     blastRoot: r.blastRoot ?? null,
+    detectionSource: r.detectionSource ?? "manual",
   };
+}
+
+function isUrlCheckRoom(room: Room) {
+  return room.detectionSource === "url_check";
 }
 
 export function RoomPage() {
@@ -225,6 +231,7 @@ export function RoomPage() {
 
   useEffect(() => {
     if (!joined || !room || demoStarted.current || params.get("demo") !== "1") return;
+    if (isUrlCheckRoom(room)) return;
     if ((room.affected ?? []).length > 0) return;
     demoStarted.current = true;
     void runCascade("api");
@@ -339,7 +346,12 @@ export function RoomPage() {
   async function onUpload(file: File) {
     if (!code) return;
     try {
-      await uploadFile(code, file, name, `Screenshot: ${file.name}`);
+      const event = await uploadFile(code, file, name, `Screenshot: ${file.name}`);
+      setRoom((prev) =>
+        prev && !prev.events.some((x) => x.id === event.id)
+          ? { ...prev, events: [...prev.events, event] }
+          : prev,
+      );
     } catch (ex) {
       setErr(ex instanceof Error ? ex.message : "upload failed");
     }
@@ -347,38 +359,56 @@ export function RoomPage() {
 
   if (!joined) {
     return (
-      <form className="gate card" onSubmit={join}>
-        <h2 style={{ margin: 0, fontFamily: "var(--font-display)" }}>Join room</h2>
-        <p className="muted" style={{ margin: 0 }}>
-          Code <span className="mono">{code}</span>
-        </p>
-        <input
-          placeholder="Display name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          maxLength={64}
-          autoFocus
-        />
-        <label className="muted" htmlFor="role">
-          Role
-        </label>
-        <select
-          id="role"
-          value={role}
-          onChange={(e) => setRole(e.target.value as Role)}
-        >
-          <option value="host">Host / judge — full blast map</option>
-          <option value="teammate">Teammate — focused checklist</option>
-        </select>
-        <button className="primary" type="submit">
-          Enter war-room
-        </button>
-      </form>
+      <div className="shell product-shell">
+        <form className="gate card" onSubmit={join}>
+          <h2 style={{ margin: 0, fontFamily: "var(--font-display)" }}>Join room</h2>
+          <p className="muted" style={{ margin: 0 }}>
+            Code <span className="mono">{code}</span>
+          </p>
+          <input
+            placeholder="Display name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={64}
+            autoFocus
+          />
+          <label className="muted" htmlFor="role">
+            Role
+          </label>
+          <select id="role" value={role} onChange={(e) => setRole(e.target.value as Role)}>
+            <option value="host">Host / judge — full blast map</option>
+            <option value="teammate">Teammate — focused checklist</option>
+          </select>
+          <button className="primary" type="submit">
+            Enter war-room
+          </button>
+        </form>
+      </div>
     );
   }
 
   if (!room) {
-    return <p className="muted">{err || "Loading room…"}</p>;
+    return (
+      <div className="shell product-shell">
+        <p className="muted">{err || "Loading room…"}</p>
+      </div>
+    );
+  }
+
+  if (isUrlCheckRoom(room)) {
+    return (
+      <UrlCheckRoomView
+        room={room}
+        code={code}
+        name={name}
+        connected={connected}
+        presence={presence}
+        note={note}
+        setNote={setNote}
+        onSendNote={(e) => void sendNote(e)}
+        shareUrl={shareUrl}
+      />
+    );
   }
 
   const viewers = Math.max(presence.length, 1);
@@ -440,7 +470,7 @@ export function RoomPage() {
       <div className="topbar">
         <div>
           <p className="muted" style={{ margin: "0 0 0.35rem" }}>
-            <Link to="/">Dashboard</Link> · <Link to={`/incidents/${code}`}>Incident</Link> · war room
+            <Link to="/dashboard">Dashboard</Link> · <Link to={`/incidents/${code}`}>Incident</Link> · war room
           </p>
           <div className="row" style={{ marginBottom: "0.4rem" }}>
             <span className={`sev ${room.severity} ${flashSev ? "flash" : ""}`}>{room.severity}</span>
@@ -512,14 +542,19 @@ export function RoomPage() {
           <button
             type="button"
             disabled={busy}
-            onClick={() => void incidentAction(code, "investigate", { author: name })}
-          >
-            Investigate
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void incidentAction(code, "alert", { author: name })}
+            onClick={async () => {
+              try {
+                const res = await incidentAction(code, "alert", { author: name });
+                if (!res.ok) {
+                  setErr("Discord alert not delivered. Check Integrations page for webhook status.");
+                } else {
+                  setErr("");
+                  setActivity((prev) => ["Discord alert sent", ...prev].slice(0, 40));
+                }
+              } catch (ex) {
+                setErr(ex instanceof Error ? ex.message : "alert failed");
+              }
+            }}
           >
             Send alert
           </button>

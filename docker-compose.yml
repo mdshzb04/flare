@@ -18,6 +18,18 @@ services:
       MINIO_ROOT_PASSWORD: flareflare
     ports: ["9000:9000", "9001:9001"]
     volumes: [miniodata:/data]
+
+  # External monitored demo application (not Flare)
+  shopdb:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: shop
+    ports: ["5433:5432"]
+    volumes: [shoppgdata:/var/lib/postgresql/data]
+
 volumes:
   pgdata:
   miniodata:
+  shoppgdata:

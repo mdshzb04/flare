@@ -9,6 +9,7 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { matchRule, type RuleTrigger } from "./automation";
+import { computeLiveMetrics, isDegraded, isRecovered, type LiveSnap } from "./liveMonitor";
 import {
   ROOM_TTL_MS,
   TICK_MS,
@@ -62,7 +63,10 @@ const s3 = new S3Client({
 
 const rooms = new Map<string, RoomSim>();
 const firedRules = new Map<string, number>(); // ruleId -> last fire ts
-let lastPayload: MetricsPayload | null = null;
+let lastPayload: MetricsPayload | null = null; // DEMO sim only (war-room load viz)
+let lastLive: LiveSnap | null = null;
+let healthyStreak = 0;
+let degradedStreak = 0;
 
 function roomChannel(roomCode: string) {
   return `${CHANNEL}:${roomCode}`;
@@ -159,15 +163,18 @@ async function metricsLoop() {
     }
   });
 
-  console.log("flare-worker metrics on", `${CHANNEL}:*`);
+  console.log("flare-worker DEMO room metrics on", `${CHANNEL}:*`);
   for (;;) {
     const now = Date.now();
-    // Always keep a baseline sim ticking for dashboard even with no rooms
+    // Internal war-room load sim only — not production dashboard source
     if (rooms.size === 0) {
       const orphan = newRoomSim([]);
       const payload = tickRoom(orphan, now);
       lastPayload = payload;
-      await redisPub.set("flare:metrics:latest", JSON.stringify(payload));
+      await redisPub.set(
+        "flare:metrics:latest",
+        JSON.stringify({ ...payload, label: "DEMO", source: "demo" }),
+      );
     }
     for (const [code, sim] of rooms) {
       if (now - sim.lastActivity > ROOM_TTL_MS) {
@@ -178,33 +185,10 @@ async function metricsLoop() {
       lastPayload = payload;
       try {
         await redisPub.publish(roomChannel(code), JSON.stringify(payload));
-        await redisPub.set("flare:metrics:latest", JSON.stringify(payload));
-        // Threshold timeline mark (rate-limited)
-        if (payload.errorRate > 8 || payload.latencyMs > 180) {
-          const key = `thr:${code}`;
-          const last = firedRules.get(key) || 0;
-          if (now - last > 20_000) {
-            firedRules.set(key, now);
-            void fetch(`${apiBase}/api/internal/timeline`, {
-              method: "POST",
-              headers: {
-                "content-type": "application/json",
-                "x-flare-secret": secret,
-              },
-              body: JSON.stringify({
-                roomCode: code,
-                kind: "metric.threshold",
-                summary: `errorRate ${payload.errorRate}% · latency ${payload.latencyMs}ms · q ${payload.queueDepth}`,
-                payload: {
-                  errorRate: payload.errorRate,
-                  latencyMs: payload.latencyMs,
-                  queueDepth: payload.queueDepth,
-                  degradedPct: payload.degradedPct,
-                },
-              }),
-            }).catch(() => {});
-          }
-        }
+        await redisPub.set(
+          "flare:metrics:latest",
+          JSON.stringify({ ...payload, label: "DEMO", source: "demo" }),
+        );
       } catch (err) {
         console.error("metrics publish failed", code, err);
       }
@@ -213,19 +197,98 @@ async function metricsLoop() {
   }
 }
 
-async function automationLoop() {
-  console.log("flare-worker automation loop");
+async function postTelemetry(body: Record<string, unknown>) {
+  await fetch(`${apiBase}/api/telemetry/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch(() => {});
+}
+
+/** Probe monitored /health URLs and evaluate LIVE telemetry thresholds. */
+async function liveMonitorLoop() {
+  console.log("flare-worker live monitor → telemetry + health probes");
   for (;;) {
     try {
-      if (lastPayload) {
+      const targets = await sql<{ id: string; health_url: string }[]>`
+        SELECT id, health_url FROM services
+        WHERE health_url IS NOT NULL AND health_url <> ''
+      `;
+      for (const t of targets) {
+        const t0 = Date.now();
+        try {
+          const res = await fetch(t.health_url, { signal: AbortSignal.timeout(5000) });
+          const latencyMs = Date.now() - t0;
+          await postTelemetry({
+            service: t.id,
+            type: "health",
+            severity: res.ok ? "info" : "high",
+            message: res.ok
+              ? "Health check healthy"
+              : `Health check failed (HTTP ${res.status})`,
+            metadata: {
+              latencyMs,
+              status: res.status,
+              availability: res.ok ? 1 : 0,
+              probe: "flare-worker",
+            },
+          });
+          if (!res.ok || latencyMs > 1500) {
+            await postTelemetry({
+              service: t.id,
+              type: "latency",
+              severity: res.ok ? "medium" : "high",
+              message: res.ok
+                ? `Latency increased (${latencyMs}ms)`
+                : `Unhealthy response in ${latencyMs}ms`,
+              metadata: { latencyMs, status: res.status },
+            });
+          }
+        } catch (err) {
+          await postTelemetry({
+            service: t.id,
+            type: "health",
+            severity: "critical",
+            message: `Health check unreachable: ${err instanceof Error ? err.message : "error"}`,
+            metadata: {
+              latencyMs: Date.now() - t0,
+              status: 0,
+              availability: 0,
+              probe: "flare-worker",
+            },
+          });
+        }
+      }
+
+      // Dashboard window (2m) + decision window (30s) so recovery isn't stuck on stale errors
+      const live = await computeLiveMetrics(sql, 120);
+      const recent = await computeLiveMetrics(sql, 30);
+      lastLive = live;
+      await redisPub.set("flare:metrics:live", JSON.stringify(live));
+
+      // Automation / recovery from recent LIVE metrics only
+      if (isDegraded(recent)) {
+        degradedStreak += 1;
+        healthyStreak = 0;
+      } else if (isRecovered(recent)) {
+        healthyStreak += 1;
+        degradedStreak = 0;
+      } else {
+        healthyStreak = 0;
+        degradedStreak = Math.max(0, degradedStreak - 1);
+      }
+
+      if (degradedStreak >= 2) {
         const rules = await sql<
           { id: string; name: string; enabled: boolean; trigger: RuleTrigger; actions: string[] }[]
         >`SELECT id, name, enabled, trigger, actions FROM automation_rules WHERE enabled = true`;
         const snap = {
-          errorRate: lastPayload.errorRate,
-          latencyMs: lastPayload.latencyMs,
-          queueDepth: lastPayload.queueDepth,
-          degradedPct: lastPayload.degradedPct,
+          errorRate: recent.errorRate,
+          latencyMs: recent.latencyMs,
+          queueDepth: recent.queueDepth,
+          degradedPct: recent.degradedPct,
+          availability: recent.availability,
+          requestCount: recent.requestCount,
         };
         for (const rule of rules) {
           if (!matchRule(rule.trigger, snap)) continue;
@@ -242,12 +305,28 @@ async function automationLoop() {
               ruleName: rule.name,
               metrics: snap,
               actions: rule.actions,
+              service: "api",
             }),
           });
         }
       }
+
+      if (healthyStreak >= 2) {
+        const last = firedRules.get("recovery") || 0;
+        if (Date.now() - last > 30_000) {
+          firedRules.set("recovery", Date.now());
+          await fetch(`${apiBase}/api/internal/recovery`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-flare-secret": secret,
+            },
+            body: JSON.stringify({ metrics: recent, service: "api" }),
+          });
+        }
+      }
     } catch (err) {
-      console.error("automation loop", err);
+      console.error("live monitor", err);
     }
     await Bun.sleep(5000);
   }
@@ -268,7 +347,7 @@ async function thumbLoop() {
 }
 
 async function main() {
-  await Promise.all([thumbLoop(), metricsLoop(), automationLoop()]);
+  await Promise.all([thumbLoop(), metricsLoop(), liveMonitorLoop()]);
 }
 
 main().catch((err) => {

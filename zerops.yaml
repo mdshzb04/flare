@@ -39,6 +39,8 @@ zerops:
         CORS_ORIGIN: "*"
         INTERNAL_SECRET: flare-zerops-challenge
         PUBLIC_APP_URL: https://frontend-2b1c.prg1.zerops.app
+        SHOP_API_URL: http://shopapi:4000
+        SHOP_HEALTH_URL: http://shopapi:4000/health
       start: bun run index.js
 
   - setup: worker
@@ -66,6 +68,8 @@ zerops:
         S3_BUCKET: ${storage_bucketName}
         API_INTERNAL_URL: http://api:3000
         INTERNAL_SECRET: flare-zerops-challenge
+        SHOP_API_URL: http://shopapi:4000
+        SHOP_HEALTH_URL: http://shopapi:4000/health
       # Zerops wraps start with `exec`; use a script so install + long-run both happen
       start: sh ./start.sh
 
@@ -85,3 +89,49 @@ zerops:
         - .bun/install/cache
     run:
       base: static
+
+  # --- Monitored demo application (external to Flare) ---
+  - setup: shopapi
+    build:
+      base: bun@1.2
+      buildCommands:
+        - echo "shop-api sources; deps install at runtime"
+      deployFiles:
+        - apps/shop-api/~
+    deploy:
+      readinessCheck:
+        httpGet:
+          port: 4000
+          path: /health
+    run:
+      base: bun@1.2
+      ports:
+        - port: 4000
+          httpSupport: true
+      envVariables:
+        PORT: "4000"
+        DB_HOST: ${shopdb_hostname}
+        DB_PORT: ${shopdb_port}
+        DB_USER: ${shopdb_user}
+        DB_PASS: ${shopdb_password}
+        DB_NAME: ${shopdb_dbName}
+        FLARE_TELEMETRY_URL: http://api:3000/api/telemetry/events
+        OTEL_SERVICE_NAME: shop-api
+        OTEL_SERVICE_VERSION: "1.0.0"
+        OTEL_EXPORTER_OTLP_ENDPOINT: http://api:3000
+        OTEL_DEPLOYMENT_ENVIRONMENT: zerops
+      start: sh ./start.sh
+
+  - setup: shopworker
+    build:
+      base: bun@1.2
+      buildCommands:
+        - echo "shop-worker sources; deps install at runtime"
+      deployFiles:
+        - apps/shop-worker/~
+    run:
+      base: bun@1.2
+      envVariables:
+        SHOP_API_URL: http://shopapi:4000
+        FLARE_TELEMETRY_URL: http://api:3000/api/telemetry/events
+      start: sh ./start.sh

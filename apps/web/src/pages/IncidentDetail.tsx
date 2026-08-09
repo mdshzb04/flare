@@ -29,7 +29,12 @@ export function IncidentDetail() {
   }, [code]);
 
   async function act(action: string) {
-    await incidentAction(code, action, { author: localStorage.getItem("flare:name") || "operator" });
+    const res = await incidentAction(code, action, { author: localStorage.getItem("flare:name") || "operator" });
+    if (action === "alert" && !res.ok) {
+      setErr(`Discord alert not delivered${res.sent === 0 ? " (0 channels)" : ""}. Check Integrations page.`);
+    } else if (action === "alert") {
+      setErr("");
+    }
     await reload();
   }
 
@@ -47,12 +52,6 @@ export function IncidentDetail() {
           <Link className="buttonish" to={`/r/${code}`}>
             Open war room
           </Link>
-          <button type="button" onClick={() => void act("investigate")}>
-            Investigate
-          </button>
-          <button type="button" onClick={() => void act("mitigate")}>
-            Mitigate
-          </button>
           <button type="button" onClick={() => void act("alert")}>
             Send alert
           </button>

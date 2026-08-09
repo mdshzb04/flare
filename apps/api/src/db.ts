@@ -8,13 +8,20 @@ const url =
 
 export const sql = postgres(url, { max: 10 });
 
-const SERVICE_SEED: { id: string; role: string; deps: string[] }[] = [
-  { id: "frontend", role: "SPA", deps: ["api"] },
-  { id: "api", role: "HTTP + WS", deps: ["db", "redis", "storage"] },
-  { id: "worker", role: "jobs", deps: ["redis", "db", "storage", "api"] },
-  { id: "db", role: "Postgres", deps: [] },
-  { id: "redis", role: "Valkey", deps: [] },
-  { id: "storage", role: "S3", deps: [] },
+const SERVICE_SEED: {
+  id: string;
+  role: string;
+  deps: string[];
+  kind: "platform" | "monitored";
+  healthUrl: string | null;
+}[] = [
+  // Flare platform (internal)
+  { id: "frontend", role: "SPA", deps: ["api"], kind: "platform", healthUrl: null },
+  { id: "api", role: "HTTP + WS", deps: ["db", "redis", "storage"], kind: "platform", healthUrl: null },
+  { id: "worker", role: "jobs", deps: ["redis", "db", "storage", "api"], kind: "platform", healthUrl: null },
+  { id: "db", role: "Postgres", deps: [], kind: "platform", healthUrl: null },
+  { id: "redis", role: "Valkey", deps: [], kind: "platform", healthUrl: null },
+  { id: "storage", role: "S3", deps: [], kind: "platform", healthUrl: null },
 ];
 
 const SCHEMA = `
@@ -45,7 +52,9 @@ CREATE INDEX IF NOT EXISTS events_room_id_idx ON events(room_id, created_at);
 CREATE TABLE IF NOT EXISTS services (
   id TEXT PRIMARY KEY,
   role TEXT NOT NULL DEFAULT '',
-  deps TEXT[] NOT NULL DEFAULT '{}'
+  deps TEXT[] NOT NULL DEFAULT '{}',
+  kind TEXT NOT NULL DEFAULT 'platform',
+  health_url TEXT
 );
 
 CREATE TABLE IF NOT EXISTS incident_events (
@@ -89,6 +98,9 @@ CREATE TABLE IF NOT EXISTS integrations (
   config JSONB NOT NULL DEFAULT '{}',
   events TEXT[] NOT NULL DEFAULT '{}',
   enabled BOOLEAN NOT NULL DEFAULT true,
+  last_delivery_status TEXT,
+  last_delivery_at TIMESTAMPTZ,
+  last_delivery_error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -109,31 +121,63 @@ export async function migrate() {
   await sql.unsafe(`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS detection_source TEXT NOT NULL DEFAULT 'manual'`);
   await sql.unsafe(`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`);
 
+  await sql.unsafe(`ALTER TABLE services ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'platform'`);
+  await sql.unsafe(`ALTER TABLE services ADD COLUMN IF NOT EXISTS health_url TEXT`);
+
   for (const s of SERVICE_SEED) {
     await sql`
-      INSERT INTO services (id, role, deps)
-      VALUES (${s.id}, ${s.role}, ${s.deps})
-      ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, deps = EXCLUDED.deps
+      INSERT INTO services (id, role, deps, kind, health_url)
+      VALUES (${s.id}, ${s.role}, ${s.deps}, ${s.kind}, ${s.healthUrl})
+      ON CONFLICT (id) DO UPDATE SET
+        role = EXCLUDED.role,
+        deps = EXCLUDED.deps,
+        kind = EXCLUDED.kind,
+        health_url = EXCLUDED.health_url
     `;
   }
 
-  // Seed Discord integration from env if none exists
-  const [existing] = await sql<{ id: string }[]>`
-    SELECT id FROM integrations WHERE kind = 'discord' LIMIT 1
+  await sql`DELETE FROM services WHERE id IN (${"shop-api"}, ${"shop-worker"}, ${"shop-db"})`;
+
+  await sql.unsafe(`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS last_delivery_status TEXT`);
+  await sql.unsafe(`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS last_delivery_at TIMESTAMPTZ`);
+  await sql.unsafe(`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS last_delivery_error TEXT`);
+
+  // Seed Discord integration from env if none exists; repair empty URL / events
+  const envUrl = (process.env.DISCORD_WEBHOOK_URL || "").trim();
+  const defaultEvents = [
+    "incident.created",
+    "incident.escalated",
+    "service.degraded",
+    "incident.resolved",
+  ];
+  const [existing] = await sql<{ id: string; config: { url?: string } }[]>`
+    SELECT id, config FROM integrations WHERE kind = 'discord' LIMIT 1
   `;
   if (!existing) {
-    const url = (process.env.DISCORD_WEBHOOK_URL || "").trim();
     await sql`
       INSERT INTO integrations (id, kind, name, config, events, enabled)
       VALUES (
         ${crypto.randomUUID()},
         ${"discord"},
         ${"Discord"},
-        ${sql.json({ url })},
-        ${["incident.created", "service.degraded", "incident.resolved", "incident.escalated"]},
-        ${Boolean(url)}
+        ${sql.json({ url: envUrl })},
+        ${defaultEvents},
+        ${Boolean(envUrl)}
       )
     `;
+  } else {
+    const hasUrl = Boolean(String(existing.config?.url || "").trim());
+    if (!hasUrl && envUrl) {
+      await sql`
+        UPDATE integrations
+        SET config = ${sql.json({ url: envUrl })}, enabled = true, events = ${defaultEvents}
+        WHERE id = ${existing.id}
+      `;
+    } else {
+      await sql`
+        UPDATE integrations SET events = ${defaultEvents} WHERE id = ${existing.id}
+      `;
+    }
   }
 
   const [rule] = await sql<{ id: string }[]>`SELECT id FROM automation_rules LIMIT 1`;
@@ -143,10 +187,14 @@ export async function migrate() {
       VALUES (
         ${crypto.randomUUID()},
         ${"High error rate"},
-        ${true},
-        ${sql.json({ metric: "errorRate", op: "gt", value: 8 })},
+        ${false},
+        ${sql.json({ metric: "errorRate", op: "gt", value: 25 })},
         ${sql.json(["create_incident", "discord_alert"])}
       )
+    `;
+  } else {
+    await sql`
+      UPDATE automation_rules SET enabled = false WHERE name = ${"High error rate"}
     `;
   }
 }

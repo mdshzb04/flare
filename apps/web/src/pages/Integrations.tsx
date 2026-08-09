@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { getIntegrations, putIntegration } from "../api";
+import { getIntegrations, putIntegration, testIntegration } from "../api";
 
 const EVENTS = ["incident.created", "incident.escalated", "service.degraded", "incident.resolved"];
 
@@ -10,6 +10,7 @@ export function Integrations() {
   const [enabled, setEnabled] = useState(true);
   const [events, setEvents] = useState<string[]>(EVENTS);
   const [msg, setMsg] = useState("");
+  const [testing, setTesting] = useState(false);
 
   async function reload() {
     const d = await getIntegrations();
@@ -24,8 +25,27 @@ export function Integrations() {
     e.preventDefault();
     await putIntegration({ kind, url: url || undefined, enabled, events });
     setUrl("");
-    setMsg("Saved");
+    setMsg("Saved (webhook URL stored server-side only)");
     await reload();
+  }
+
+  async function sendTest() {
+    setTesting(true);
+    setMsg("");
+    try {
+      const res = await testIntegration(kind);
+      setMsg(
+        res.ok
+          ? `Test alert delivered (HTTP ${res.status ?? "2xx"})`
+          : `Test failed: ${res.error || "unknown"}`,
+      );
+      if (res.integrations) setRows(res.integrations as typeof rows);
+      else await reload();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "test failed");
+    } finally {
+      setTesting(false);
+    }
   }
 
   function toggleEvent(ev: string) {
@@ -42,13 +62,27 @@ export function Integrations() {
           <h3>Configured</h3>
           <ul className="svc-list">
             {rows.map((r) => (
-              <li key={r.id}>
+              <li key={r.id} style={{ flexWrap: "wrap" }}>
                 <strong>{r.kind}</strong>
                 <span className="muted">{r.enabled ? "enabled" : "disabled"}</span>
-                <span className="mono muted">{r.urlMasked || "no url"}</span>
+                <span className="muted">{r.configured ? "● Configured" : "○ Not configured"}</span>
+                <span className="muted">
+                  Last delivery:{" "}
+                  {r.lastDeliveryStatus === "ok"
+                    ? "OK"
+                    : r.lastDeliveryStatus === "failed"
+                      ? `Failed${r.lastError ? ` (${r.lastError})` : ""}`
+                      : "—"}
+                </span>
+                {r.lastDeliveryAt ? (
+                  <span className="mono muted">{new Date(r.lastDeliveryAt).toLocaleString()}</span>
+                ) : null}
               </li>
             ))}
           </ul>
+          <button type="button" disabled={testing} onClick={() => void sendTest()} style={{ marginTop: "0.75rem" }}>
+            {testing ? "Sending…" : "Send Test Alert"}
+          </button>
         </section>
         <section className="card">
           <h3>Upsert webhook</h3>
@@ -61,12 +95,13 @@ export function Integrations() {
               </select>
             </label>
             <label>
-              Webhook URL {rows.find((r) => r.kind === kind)?.hasUrl ? "(leave blank to keep)" : ""}
+              Webhook URL {rows.find((r) => r.kind === kind)?.configured ? "(leave blank to keep)" : ""}
               <input
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://…"
-                type="url"
+                placeholder="https://discord.com/api/webhooks/…"
+                type="password"
+                autoComplete="off"
               />
             </label>
             <label className="row">

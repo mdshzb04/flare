@@ -77,7 +77,7 @@ export function StatusPage() {
         Responders: join the <Link to={`/r/${code}`}>war-room</Link>
       </p>
       <p className="powered">
-        Powered by <Link to="/">Flare</Link> — built on Zerops
+        Powered by <Link to="/">Flare</Link> · <Link to="/dashboard">Dashboard</Link> — built on Zerops
       </p>
     </section>
   );

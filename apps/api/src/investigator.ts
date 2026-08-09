@@ -28,6 +28,7 @@ export type InvestigateResult = {
   affectedServices: string[];
   recommendedNext: string[];
   insufficient: boolean;
+  message?: string;
 };
 
 const DEPS: Record<string, string[]> = {
@@ -93,10 +94,11 @@ export function investigate(input: InvestigateInput): InvestigateResult {
       evidence: uniq,
       affectedServices: affected,
       recommendedNext: [
-        "Mark a service down to generate cascade evidence",
-        "Ingest telemetry or wait for metric threshold events",
+        "Mark services on the blast map and watch the cascade timeline",
+        "Post notes or upload screenshots as evidence",
       ],
       insufficient: true,
+      message: "Insufficient evidence to determine the root cause.",
     };
   }
 

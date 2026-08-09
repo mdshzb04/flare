@@ -22,6 +22,7 @@ export type Room = {
   assignee: string;
   affected: string[];
   blastRoot?: string | null;
+  detectionSource?: string;
   createdAt: string;
   updatedAt: string;
   events: EventItem[];
@@ -101,7 +102,6 @@ export function getHealth() {
 export function getDashboard() {
   return req<{
     mode: string;
-    metrics: Record<string, unknown>;
     activeIncidents: {
       code: string;
       title: string;
@@ -110,40 +110,28 @@ export function getDashboard() {
       status: string;
       affected: string[];
     }[];
-    recentIncidents: { code: string; title: string; severity: string; status: string }[];
-    services: { id: string; role: string; status: string }[];
+    trackedUrls: TrackedUrl[];
     recentTimeline: { id: string; kind: string; summary: string; roomCode: string; createdAt: string }[];
-    warRooms: { code: string; title: string }[];
   }>("/api/dashboard");
 }
 
-export function getServices() {
-  return req<{
-    services: {
-      id: string;
-      name: string;
-      role: string;
-      deps: string[];
-      status: string;
-      errorRate: number | null;
-      latencyMs: number | null;
-      queueDepth: number | null;
-      rps: number | null;
-      metricsSource: string | null;
-      lastIncident: string | null;
-    }[];
-  }>("/api/services");
-}
+export type TrackedUrl = {
+  code: string;
+  title: string;
+  url: string;
+  label: string;
+  status: "up" | "down" | "unknown";
+  statusCode: string | null;
+  latencyMs: number | null;
+  isUp: boolean | null;
+  reason: string | null;
+  checkedAt: string | null;
+  checkCount: number;
+  updatedAt: string;
+};
 
-export function getService(id: string) {
-  return req<{
-    id: string;
-    role: string;
-    deps: string[];
-    metrics: Record<string, unknown> | null;
-    telemetry: { id: string; type: string; severity: string; message: string; createdAt: string }[];
-    incidents: { code: string; title: string; status: string; severity: string }[];
-  }>(`/api/services/${id}`);
+export function getTrackedUrls() {
+  return req<{ urls: TrackedUrl[] }>("/api/tracked-urls");
 }
 
 export function getIncidents() {
@@ -173,7 +161,7 @@ export function getIncident(code: string) {
 }
 
 export function incidentAction(code: string, action: string, extra?: { note?: string; author?: string }) {
-  return req<{ ok: boolean; room: Room }>(`/api/incidents/${code}/actions`, {
+  return req<{ ok: boolean; sent?: number; room: Room }>(`/api/incidents/${code}/actions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ action, ...extra }),
@@ -188,18 +176,20 @@ export function askIncident(code: string, question: string) {
   });
 }
 
+export type IntegrationSafe = {
+  id: string;
+  kind: string;
+  name: string;
+  enabled: boolean;
+  events: string[];
+  configured: boolean;
+  lastDeliveryStatus: string | null;
+  lastDeliveryAt: string | null;
+  lastError: string | null;
+};
+
 export function getIntegrations() {
-  return req<{
-    integrations: {
-      id: string;
-      kind: string;
-      name: string;
-      enabled: boolean;
-      events: string[];
-      urlMasked: string;
-      hasUrl: boolean;
-    }[];
-  }>("/api/integrations");
+  return req<{ integrations: IntegrationSafe[] }>("/api/integrations");
 }
 
 export function putIntegration(body: {
@@ -210,10 +200,23 @@ export function putIntegration(body: {
   events?: string[];
   enabled?: boolean;
 }) {
-  return req<{ integrations: unknown[] }>("/api/integrations", {
+  return req<{ integrations: IntegrationSafe[] }>("/api/integrations", {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+export function testIntegration(kind = "discord") {
+  return req<{
+    ok: boolean;
+    status: number | null;
+    error: string | null;
+    integrations?: IntegrationSafe[];
+  }>("/api/integrations/test", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind }),
   });
 }
 
@@ -239,6 +242,23 @@ export function createAutomationRule(body: {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+export type UrlCheckResult = {
+  url: string;
+  statusCode: number | null;
+  latencyMs: number;
+  isUp: boolean;
+  checkedAt: string;
+  reason?: string;
+};
+
+export function checkUrl(url: string) {
+  return req<UrlCheckResult>("/api/check-url", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url }),
   });
 }
 

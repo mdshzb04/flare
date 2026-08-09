@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import type { ServerWebSocket } from "bun";
 import { migrate, sql } from "./db";
 import { notifyAffectedTransition } from "./integrations";
+import { registerOtlpRoutes } from "./otlp";
 import { registerProductRoutes } from "./product";
 import { appendIncidentEvent, serializeIncidentEvent } from "./timeline";
 import { CHANNEL, QUEUE, ensureRedis, redis, redisSub } from "./redis";
@@ -115,6 +116,7 @@ function serializeRoom(room: RoomRow, events: EventRow[]) {
     assignee: room.assignee,
     affected: room.affected ?? [],
     blastRoot: room.blast_root || null,
+    detectionSource: room.detection_source || "manual",
     createdAt: room.created_at,
     updatedAt: room.updated_at,
     events: events.map((e) => ({
@@ -148,6 +150,7 @@ registerProductRoutes(app, {
   id,
   code,
 });
+registerOtlpRoutes(app, { id, publish });
 
 app.get("/health", async (c) => {
   let db = false;
@@ -201,28 +204,31 @@ app.post("/api/rooms", async (c) => {
     INSERT INTO rooms (id, code, title, detection_source)
     VALUES (${roomId}, ${roomCode}, ${title}, ${detectionSource})
   `;
-  const seeds = [
-    {
-      id: id(),
-      body: "Checked pgbouncer — connection pool exhausted at 14:32 UTC, restarting service.",
-      author: "oncall",
-    },
-    {
-      id: id(),
-      body: "Confirmed — Valkey pub/sub backlog climbing. Investigating worker lag on job consumers.",
-      author: "platform",
-    },
-    {
-      id: id(),
-      body: "Frontend still up. Holding sev2 until blast radius is mapped — watch live error rate on the blast map.",
-      author: "sre",
-    },
-  ];
-  for (const s of seeds) {
-    await sql`
-      INSERT INTO events (id, room_id, kind, body, author)
-      VALUES (${s.id}, ${roomId}, ${"note"}, ${s.body}, ${s.author})
-    `;
+  // Demo seeds only for manual/demo war rooms — not URL checks or automation incidents.
+  if (detectionSource === "manual" || detectionSource === "demo") {
+    const seeds = [
+      {
+        id: id(),
+        body: "Checked pgbouncer — connection pool exhausted at 14:32 UTC, restarting service.",
+        author: "oncall",
+      },
+      {
+        id: id(),
+        body: "Confirmed — Valkey pub/sub backlog climbing. Investigating worker lag on job consumers.",
+        author: "platform",
+      },
+      {
+        id: id(),
+        body: "Frontend still up. Holding sev2 until blast radius is mapped — watch live error rate on the blast map.",
+        author: "sre",
+      },
+    ];
+    for (const s of seeds) {
+      await sql`
+        INSERT INTO events (id, room_id, kind, body, author)
+        VALUES (${s.id}, ${roomId}, ${"note"}, ${s.body}, ${s.author})
+      `;
+    }
   }
   await appendIncidentEvent(roomId, "incident.created", `Incident opened: ${title}`, {
     detectionSource,
@@ -313,16 +319,28 @@ app.patch("/api/rooms/:code", async (c) => {
     await publish(roomCode, { type: "timeline:append", event: serializeIncidentEvent(ev) });
   }
 
-  void notifyAffectedTransition(roomCode, prevAffected, serialized).then(async () => {
-    if (prevAffected.length === 0 && affected.length > 0) {
-      const ev = await appendIncidentEvent(room.id, "alert.sent", "Outbound alert fired (service.degraded)");
-      await publish(roomCode, { type: "timeline:append", event: serializeIncidentEvent(ev) });
-      await publish(roomCode, { type: "activity", text: "Discord/webhook alert sent" });
-    } else if (prevAffected.length > 0 && affected.length === 0) {
-      const ev = await appendIncidentEvent(room.id, "alert.sent", "All-clear alert fired");
-      await publish(roomCode, { type: "timeline:append", event: serializeIncidentEvent(ev) });
+  const sent = await notifyAffectedTransition(roomCode, prevAffected, serialized);
+  if (prevAffected.length === 0 && affected.length > 0) {
+    const summary =
+      sent > 0
+        ? `Discord alert sent (${sent} channel(s)) — service.degraded`
+        : "Discord alert not delivered — check Integrations for webhook URL and last error";
+    const ev = await appendIncidentEvent(room.id, "alert.sent", summary);
+    await publish(roomCode, { type: "timeline:append", event: serializeIncidentEvent(ev) });
+    if (sent > 0) {
+      await publish(roomCode, { type: "activity", text: "Discord alert sent" });
     }
-  });
+  } else if (prevAffected.length > 0 && affected.length === 0) {
+    const summary =
+      sent > 0
+        ? `Discord all-clear sent (${sent} channel(s))`
+        : "Discord all-clear not delivered — check Integrations for webhook URL and last error";
+    const ev = await appendIncidentEvent(room.id, "alert.sent", summary);
+    await publish(roomCode, { type: "timeline:append", event: serializeIncidentEvent(ev) });
+    if (sent > 0) {
+      await publish(roomCode, { type: "activity", text: "Discord all-clear sent" });
+    }
+  }
   void resolvedAt;
   return c.json(serialized);
 });

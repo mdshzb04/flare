@@ -30,7 +30,7 @@ export function Automation() {
     <>
       <div className="page-head">
         <h1>Automation</h1>
-        <p className="muted">Worker evaluates rules against live DEMO metrics every few seconds.</p>
+        <p className="muted">Worker evaluates rules against LIVE telemetry aggregates every few seconds.</p>
       </div>
       <div className="split-2">
         <section className="card">

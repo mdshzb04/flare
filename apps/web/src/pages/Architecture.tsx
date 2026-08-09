@@ -99,7 +99,7 @@ export function Architecture() {
         </div>
       ) : (
         <p className="muted">
-          Open a <Link to="/">war-room</Link> first, then come back — blast radius binds to your last
+          Open a <Link to="/dashboard">dashboard</Link> / war-room first, then come back — blast radius binds to your last
           room.
         </p>
       )}

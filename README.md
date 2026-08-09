@@ -1,6 +1,6 @@
 # Flare
 
-Live multiplayer incident war-room. Share a room link — severity, timeline, and presence sync across tabs. Screenshots upload to object storage; a worker builds thumbnails.
+Live multiplayer incident war-room. Share a room link — severity, blast radius, timeline, and presence sync across tabs. Screenshots upload to object storage; a worker builds thumbnails. Probe external URLs for health checks.
 
 **Live:** https://frontend-2b1c.prg1.zerops.app  
 **API:** https://api-2b1c-3000.prg1.zerops.app  
@@ -13,8 +13,9 @@ Live multiplayer incident war-room. Share a room link — severity, timeline, an
 1. Open Flare → create war-room  
 2. Copy link → second browser tab  
 3. Type update in tab A → appears in tab B  
-4. Flip severity → both tabs update  
+4. Mark **api** on the blast map → cascade hops + live metrics tick  
 5. Upload screenshot → thumbnail lands via worker  
+6. Resolve → Discord all-clear (when webhook configured)
 
 ## Architecture (Zerops)
 
@@ -23,7 +24,7 @@ Six services. Public edge = `frontend` + `api`. Everything else stays on the Zer
 ```mermaid
 flowchart TB
   subgraph publicEdge [Public]
-    User([Judge / teammate])
+    User([Operator / teammate])
     FE[frontend<br/>React static SPA]
     API[api<br/>Bun + Hono + WebSocket]
   end
@@ -46,13 +47,17 @@ flowchart TB
   WRK -->|notify| API
 ```
 
-**Data path (demo):** browser → `api` WS → Valkey publish → other tabs · upload → `storage` → Valkey queue → `worker` thumbnail → WS `event:thumb`.
+**Data paths:**
+- **War room sync:** browser → `api` WS → Valkey publish → other tabs  
+- **Screenshot:** upload → `storage` → Valkey queue → `worker` thumbnail → WS `event:thumb`  
+- **URL check:** landing probe → `api` HTTP fetch → indexed check room on dashboard  
+- **Live metrics:** `worker` ticks per-room load sim → Valkey → open war rooms  
 
 | Service | Role | Exposure |
 |---------|------|----------|
 | `frontend` | React SPA | public |
 | `api` | HTTP + WebSocket | public |
-| `worker` | Thumbnail jobs | private |
+| `worker` | Thumbnails + room metrics | private |
 | `db` | Postgres persistence | private |
 | `redis` | Pub/sub + queue | private |
 | `storage` | Screenshots / thumbs | private API, public object URLs |
@@ -80,6 +85,12 @@ bun run dev:web      # :5173
 Open http://localhost:5173
 
 Self-check (no DB): `bun run check`
+
+Optional: purge seeded test incident rooms from local Postgres:
+
+```bash
+bun run scripts/cleanup-test-rooms.ts
+```
 
 ## Deploy on Zerops
 

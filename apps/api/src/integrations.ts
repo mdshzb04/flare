@@ -1,5 +1,30 @@
 import { sql } from "./db";
-import { buildDiscordPayload, publicRoomUrl, type NotifyRoom } from "./discord";
+import {
+  buildDiscordAlert,
+  publicRoomUrl,
+  type NotifyMetrics,
+  type NotifyRoom,
+} from "./discord";
+import { redis } from "./redis";
+
+async function liveMetricsSnapshot(): Promise<NotifyMetrics | null> {
+  try {
+    const raw = await redis.get("flare:metrics:live");
+    if (!raw) return null;
+    const m = JSON.parse(raw) as {
+      errorRate?: number;
+      availability?: number;
+      latencyMs?: number;
+    };
+    const out: NotifyMetrics = {};
+    if (m.errorRate != null) out.errorRate = m.errorRate;
+    if (m.availability != null) out.availability = m.availability;
+    if (m.latencyMs != null) out.latencyMs = m.latencyMs;
+    return Object.keys(out).length ? out : null;
+  } catch {
+    return null;
+  }
+}
 
 export type IntegrationEvent =
   | "incident.created"
@@ -14,18 +39,17 @@ type IntegrationRow = {
   config: { url?: string };
   events: string[];
   enabled: boolean;
+  last_delivery_status?: string | null;
+  last_delivery_at?: Date | null;
+  last_delivery_error?: string | null;
 };
 
-function maskUrl(url: string) {
-  if (!url) return "";
-  try {
-    const u = new URL(url);
-    const path = u.pathname.length > 12 ? u.pathname.slice(0, 8) + "…" : u.pathname;
-    return `${u.origin}${path}`;
-  } catch {
-    return "••••";
-  }
-}
+const DEFAULT_EVENTS: IntegrationEvent[] = [
+  "incident.created",
+  "incident.escalated",
+  "service.degraded",
+  "incident.resolved",
+];
 
 export async function listIntegrations() {
   const rows = await sql<IntegrationRow[]>`SELECT * FROM integrations ORDER BY kind`;
@@ -35,8 +59,10 @@ export async function listIntegrations() {
     name: r.name,
     enabled: r.enabled,
     events: r.events ?? [],
-    urlMasked: maskUrl(String(r.config?.url || "")),
-    hasUrl: Boolean(r.config?.url),
+    configured: Boolean(String(r.config?.url || "").trim()),
+    lastDeliveryStatus: r.last_delivery_status || null,
+    lastDeliveryAt: r.last_delivery_at || null,
+    lastError: r.last_delivery_error || null,
   }));
 }
 
@@ -54,7 +80,9 @@ export async function upsertIntegration(input: {
     : await sql<IntegrationRow[]>`SELECT * FROM integrations WHERE kind = ${kind} LIMIT 1`;
 
   if (existing) {
-    const url = input.url !== undefined ? input.url.trim() : String(existing.config?.url || "");
+    const prevUrl = String(existing.config?.url || "").trim();
+    const url =
+      input.url !== undefined && input.url.trim() !== "" ? input.url.trim() : prevUrl;
     const events = input.events ?? existing.events;
     const enabled = input.enabled ?? existing.enabled;
     const name = input.name ?? existing.name;
@@ -75,7 +103,7 @@ export async function upsertIntegration(input: {
       ${kind},
       ${input.name || kind},
       ${sql.json({ url: (input.url || "").trim() })},
-      ${input.events || ["incident.created", "service.degraded", "incident.resolved"]},
+      ${input.events || DEFAULT_EVENTS},
       ${input.enabled ?? true}
     )
     RETURNING *
@@ -83,23 +111,61 @@ export async function upsertIntegration(input: {
   return row;
 }
 
-async function postJson(url: string, body: unknown) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    console.error("integration post failed", res.status, await res.text().catch(() => ""));
+async function recordDelivery(
+  id: string,
+  status: "ok" | "failed",
+  error: string | null,
+) {
+  await sql`
+    UPDATE integrations
+    SET last_delivery_status = ${status},
+        last_delivery_at = NOW(),
+        last_delivery_error = ${error}
+    WHERE id = ${id}
+  `;
+}
+
+type PostResult = { ok: boolean; status: number; error: string | null };
+
+async function postJson(url: string, body: unknown): Promise<PostResult> {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
+    });
+    // Discord returns 204 No Content on success
+    if (res.status >= 200 && res.status < 300) {
+      return { ok: true, status: res.status, error: null };
+    }
+    const text = await res.text().catch(() => "");
+    return {
+      ok: false,
+      status: res.status,
+      error: `HTTP ${res.status}${text ? `: ${text.slice(0, 120)}` : ""}`,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "network_error";
+    const sanitized = msg.includes("abort") ? "timeout" : msg.slice(0, 160);
+    return { ok: false, status: 0, error: sanitized };
+  }
+}
+
+async function alreadySent(dedupeKey: string): Promise<boolean> {
+  try {
+    const ok = await redis.set(`flare:alert:${dedupeKey}`, "1", "EX", 3600, "NX");
+    return ok !== "OK";
+  } catch {
     return false;
   }
-  return true;
 }
 
 export async function dispatchIntegrations(
   event: IntegrationEvent,
   roomCode: string,
   room: NotifyRoom,
+  opts?: { force?: boolean },
 ) {
   const rows = await sql<IntegrationRow[]>`
     SELECT * FROM integrations WHERE enabled = true
@@ -110,17 +176,24 @@ export async function dispatchIntegrations(
   for (const row of rows) {
     if (!(row.events || []).includes(event)) continue;
     const url = String(row.config?.url || "").trim();
-    if (!url) continue;
+    if (!url) {
+      await recordDelivery(row.id, "failed", "Webhook URL not configured");
+      continue;
+    }
 
+    const dedupeKey = `${event}:${roomCode}:${row.id}`;
+    if (!opts?.force && (await alreadySent(dedupeKey))) {
+      console.log("integration dedupe skip", event, roomCode, row.kind);
+      continue;
+    }
+
+    let result: PostResult;
     if (row.kind === "discord") {
-      const kind = event === "incident.resolved" ? "clear" : "down";
-      const ok = await postJson(url, buildDiscordPayload(kind, roomCode, room));
-      if (ok) {
-        sent++;
-        console.log("discord webhook ok", event, roomCode);
-      }
+      const metrics = room.metrics ?? (await liveMetricsSnapshot());
+      const payload = buildDiscordAlert(event, roomCode, { ...room, metrics });
+      result = await postJson(url, payload);
     } else {
-      const ok = await postJson(url, {
+      result = await postJson(url, {
         event,
         incident: {
           code: roomCode,
@@ -133,13 +206,51 @@ export async function dispatchIntegrations(
         link,
         at: new Date().toISOString(),
       });
-      if (ok) {
-        sent++;
-        console.log("generic webhook ok", event, roomCode);
-      }
+    }
+
+    if (result.ok) {
+      sent++;
+      await recordDelivery(row.id, "ok", null);
+      console.log("integration ok", row.kind, event, roomCode, "http", result.status);
+    } else {
+      await recordDelivery(row.id, "failed", result.error);
+      console.error("integration failed", row.kind, event, roomCode, result.error);
     }
   }
   return sent;
+}
+
+export async function sendTestAlert(kind = "discord"): Promise<{
+  ok: boolean;
+  status: number | null;
+  error: string | null;
+}> {
+  const [row] = await sql<IntegrationRow[]>`
+    SELECT * FROM integrations WHERE kind = ${kind} LIMIT 1
+  `;
+  if (!row) return { ok: false, status: null, error: "Integration not found" };
+  const url = String(row.config?.url || "").trim();
+  if (!url) {
+    await recordDelivery(row.id, "failed", "Webhook URL not configured");
+    return { ok: false, status: null, error: "Webhook URL not configured" };
+  }
+
+  const body = buildDiscordAlert("test", "test", {
+    title: "Discord test",
+    severity: "sev4",
+    status: "connected",
+    affected: [],
+  });
+
+  const result = await postJson(url, body);
+  if (result.ok) {
+    await recordDelivery(row.id, "ok", null);
+    console.log("discord test ok", result.status);
+  } else {
+    await recordDelivery(row.id, "failed", result.error);
+    console.error("discord test failed", result.error);
+  }
+  return { ok: result.ok, status: result.status || null, error: result.error };
 }
 
 /** Bridge old affected-transition behavior onto integration events. */
@@ -147,11 +258,16 @@ export async function notifyAffectedTransition(
   roomCode: string,
   prevAffected: string[],
   room: NotifyRoom,
-) {
+): Promise<number> {
   const next = room.affected ?? [];
   if (prevAffected.length === 0 && next.length > 0) {
-    await dispatchIntegrations("service.degraded", roomCode, room);
-  } else if (prevAffected.length > 0 && next.length === 0) {
-    await dispatchIntegrations("incident.resolved", roomCode, room);
+    return dispatchIntegrations("service.degraded", roomCode, room);
   }
+  if (prevAffected.length > 0 && next.length === 0) {
+    return dispatchIntegrations("incident.resolved", roomCode, {
+      ...room,
+      alertVariant: "all_clear",
+    });
+  }
+  return 0;
 }

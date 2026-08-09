@@ -28,37 +28,43 @@ export function Incidents() {
         </button>
       </div>
       {err ? <p style={{ color: "var(--sev1)" }}>{err}</p> : null}
-      <div className="card">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Severity</th>
-              <th>Title</th>
-              <th>Status</th>
-              <th>Source</th>
-              <th>Affected</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.code}>
-                <td>
-                  <span className={`sev ${r.severity}`}>{r.severityLabel}</span>
-                </td>
-                <td>
-                  <Link to={`/incidents/${r.code}`}>{r.title}</Link>
-                </td>
-                <td>{r.status}</td>
-                <td className="muted">{r.detectionSource}</td>
-                <td className="mono">{r.affected.join(", ") || "—"}</td>
-                <td>
-                  <Link to={`/r/${r.code}`}>war room</Link>
-                </td>
+      <div className="card panel">
+        {rows.length === 0 ? (
+          <p className="empty-hint">No incidents yet. Open a war room from the landing page to start one.</p>
+        ) : (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Severity</th>
+                <th>Title</th>
+                <th>Status</th>
+                <th>Source</th>
+                <th>Affected</th>
+                <th />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.code}>
+                  <td>
+                    <span className={`sev ${r.severity}`}>{r.severityLabel}</span>
+                  </td>
+                  <td>
+                    <Link to={`/incidents/${r.code}`}>{r.title}</Link>
+                  </td>
+                  <td>
+                    <span className={`status-chip ${r.status}`}>{r.status}</span>
+                  </td>
+                  <td className="muted">{r.detectionSource}</td>
+                  <td className="mono">{r.affected.join(", ") || "—"}</td>
+                  <td>
+                    <Link to={`/r/${r.code}`}>war room</Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </>
   );

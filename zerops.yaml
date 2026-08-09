@@ -46,11 +46,11 @@ zerops:
       envVariables:
         BUN_INSTALL: ./.bun
       buildCommands:
+        # install into deploy tree — do NOT cache node_modules (Zerops cache strips it from runtime)
         - cd apps/worker && bun install
       deployFiles:
         - apps/worker/~
       cache:
-        - apps/worker/node_modules
         - .bun/install/cache
     run:
       base: bun@1.2

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { ServerWebSocket } from "bun";
 import { migrate, sql } from "./db";
+import { notifyAffectedTransition } from "./discord";
 import { CHANNEL, QUEUE, ensureRedis, redis, redisSub } from "./redis";
 import { ensureBucket, putObject, publicUrl } from "./s3";
 
@@ -231,6 +232,7 @@ app.patch("/api/rooms/:code", async (c) => {
   };
   const data = await loadRoom(roomCode);
   if (!data) return c.json({ error: "not_found" }, 404);
+  const prevAffected = data.room.affected ?? [];
 
   const title = body.title?.slice(0, 120) ?? data.room.title;
   const severity = body.severity ?? data.room.severity;
@@ -252,9 +254,11 @@ app.patch("/api/rooms/:code", async (c) => {
     WHERE id = ${data.room.id}
     RETURNING *
   `;
-  const payload = { type: "room:update", room: serializeRoom(room, data.events) };
+  const serialized = serializeRoom(room, data.events);
+  const payload = { type: "room:update", room: serialized };
   await publish(roomCode, payload);
-  return c.json(serializeRoom(room, data.events));
+  void notifyAffectedTransition(roomCode, prevAffected, serialized);
+  return c.json(serialized);
 });
 
 app.post("/api/rooms/:code/events", async (c) => {
@@ -447,6 +451,7 @@ async function boot() {
         }
 
         if (msg.type === "room:update") {
+          const prevAffected = data.room.affected ?? [];
           const title = (msg.title ?? data.room.title).slice(0, 120);
           const severity = (msg.severity ?? data.room.severity) as Severity;
           const status = (msg.status ?? data.room.status) as Status;
@@ -469,7 +474,9 @@ async function boot() {
           const events = await sql<EventRow[]>`
             SELECT * FROM events WHERE room_id = ${room.id} ORDER BY created_at ASC LIMIT 200
           `;
-          await publish(roomCode, { type: "room:update", room: serializeRoom(room, events) });
+          const serialized = serializeRoom(room, events);
+          await publish(roomCode, { type: "room:update", room: serialized });
+          void notifyAffectedTransition(roomCode, prevAffected, serialized);
         }
       },
       close(ws) {

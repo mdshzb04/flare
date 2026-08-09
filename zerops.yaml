@@ -38,6 +38,7 @@ zerops:
         S3_PUBLIC_URL: ${storage_apiUrl}/${storage_bucketName}
         CORS_ORIGIN: "*"
         INTERNAL_SECRET: flare-zerops-challenge
+        PUBLIC_APP_URL: https://frontend-2b1c.prg1.zerops.app
       start: bun run index.js
 
   - setup: worker

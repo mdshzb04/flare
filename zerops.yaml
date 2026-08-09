@@ -43,15 +43,11 @@ zerops:
   - setup: worker
     build:
       base: bun@1.2
-      envVariables:
-        BUN_INSTALL: ./.bun
+      # Zerops omits node_modules from deploy artefacts; ship sources + install at boot
       buildCommands:
-        # install into deploy tree — do NOT cache node_modules (Zerops cache strips it from runtime)
-        - cd apps/worker && bun install
+        - echo "worker sources only; deps install at runtime"
       deployFiles:
         - apps/worker/~
-      cache:
-        - .bun/install/cache
     run:
       base: bun@1.2
       envVariables:
@@ -69,7 +65,7 @@ zerops:
         S3_BUCKET: ${storage_bucketName}
         API_INTERNAL_URL: http://api:3000
         INTERNAL_SECRET: flare-zerops-challenge
-      start: bun run src/index.ts
+      start: bun install && bun run src/index.ts
 
   - setup: frontend
     build:

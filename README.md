@@ -3,19 +3,11 @@
 Live multiplayer incident war-room. Share a room link — severity, blast radius, timeline, and presence sync across tabs. Screenshots upload to object storage; a worker builds thumbnails. Probe external URLs for health checks.
 
 **Live:** https://frontend-2b1c.prg1.zerops.app  
-**API:** https://api-2b1c-3000.prg1.zerops.app  
-**Repo:** https://github.com/mdshzb04/flare
+
 
 **Zerops Challenge entry.** Six services. Not a Hello World.
 
-## Live demo story (60s)
 
-1. Open Flare → create war-room  
-2. Copy link → second browser tab  
-3. Type update in tab A → appears in tab B  
-4. Mark **api** on the blast map → cascade hops + live metrics tick  
-5. Upload screenshot → thumbnail lands via worker  
-6. Resolve → Discord all-clear (when webhook configured)
 
 ## Architecture (Zerops)
 

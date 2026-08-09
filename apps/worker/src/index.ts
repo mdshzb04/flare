@@ -21,16 +21,20 @@ function redisUrl() {
   const host = process.env.REDIS_HOST || "127.0.0.1";
   const port = process.env.REDIS_PORT || "6379";
   const pass = process.env.REDIS_PASSWORD;
-  return pass ? `redis://:${pass}@${host}:${port}` : `redis://${host}:${port}`;
+  return pass
+    ? `redis://:${encodeURIComponent(pass)}@${host}:${port}`
+    : `redis://${host}:${port}`;
 }
 
 function dbUrl() {
-  return (
-    process.env.DATABASE_URL ||
-    (process.env.DB_HOST
-      ? `postgres://${process.env.DB_USER}:${process.env.DB_PASS}@${process.env.DB_HOST}:${process.env.DB_PORT || 5432}/${process.env.DB_NAME}`
-      : "postgres://flare:flare@127.0.0.1:5432/flare")
-  );
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  if (!process.env.DB_HOST) return "postgres://flare:flare@127.0.0.1:5432/flare";
+  const user = encodeURIComponent(process.env.DB_USER || "flare");
+  const pass = encodeURIComponent(process.env.DB_PASS || "");
+  const host = process.env.DB_HOST;
+  const port = process.env.DB_PORT || "5432";
+  const name = process.env.DB_NAME || "flare";
+  return `postgres://${user}:${pass}@${host}:${port}/${name}`;
 }
 
 const QUEUE = "flare:thumb:jobs";

@@ -9,6 +9,6 @@
     "build:web": "bun run --cwd apps/web build",
     "build:api": "bun run --cwd apps/api build",
     "build:worker": "bun run --cwd apps/worker build",
-    "check": "bun run --cwd apps/api check"
+    "check": "bun run --cwd apps/api check && bun run --cwd apps/worker check"
   }
 }

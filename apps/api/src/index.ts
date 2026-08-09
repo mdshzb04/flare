@@ -200,7 +200,7 @@ app.post("/api/rooms", async (c) => {
     },
     {
       id: id(),
-      body: "Frontend still up; API error rate ~12%. Holding sev2 until blast radius is mapped.",
+      body: "Frontend still up. Holding sev2 until blast radius is mapped — watch live error rate on the blast map.",
       author: "sre",
     },
   ];

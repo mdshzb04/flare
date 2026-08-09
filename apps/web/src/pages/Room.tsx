@@ -12,7 +12,7 @@ import {
   uploadFile,
   wsUrl,
 } from "../api";
-import { BlastMap } from "../components/BlastMap";
+import { BlastMap, type LiveMetrics } from "../components/BlastMap";
 import { HOP_MS, cascadeFrom, resolveOrder, sleep } from "../lib/deps";
 
 const NAME_KEY = "flare:name";
@@ -45,6 +45,7 @@ export function RoomPage() {
   const [flashStatus, setFlashStatus] = useState(false);
   const [busy, setBusy] = useState(false);
   const [localCount, setLocalCount] = useState<number | null>(null);
+  const [metrics, setMetrics] = useState<LiveMetrics | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const prevSev = useRef<string | null>(null);
@@ -121,6 +122,13 @@ export function RoomPage() {
           eventId?: string;
           thumbUrl?: string;
           room?: Room;
+          rps?: number;
+          latencyMs?: number;
+          errorRate?: number;
+          queueDepth?: number;
+          degradedPct?: number;
+          reqTotal?: number;
+          ts?: number;
         };
         try {
           msg = JSON.parse(String(ev.data));
@@ -128,6 +136,26 @@ export function RoomPage() {
           return;
         }
         if (msg.type === "presence" && msg.names) setPresence(msg.names);
+        if (
+          msg.type === "metrics" &&
+          typeof msg.latencyMs === "number" &&
+          typeof msg.errorRate === "number" &&
+          typeof msg.queueDepth === "number" &&
+          typeof msg.degradedPct === "number" &&
+          typeof msg.rps === "number" &&
+          typeof msg.reqTotal === "number" &&
+          typeof msg.ts === "number"
+        ) {
+          setMetrics({
+            rps: msg.rps,
+            latencyMs: msg.latencyMs,
+            errorRate: msg.errorRate,
+            queueDepth: msg.queueDepth,
+            degradedPct: msg.degradedPct,
+            reqTotal: msg.reqTotal,
+            ts: msg.ts,
+          });
+        }
         if (msg.type === "event:create" && msg.event) {
           setRoom((prev) => {
             if (!prev) return prev;
@@ -436,6 +464,7 @@ export function RoomPage() {
           interactive
           busy={busy}
           displayCount={localCount ?? undefined}
+          metrics={metrics}
           onMarkDown={(id) => void runCascade(id)}
           title="Blast radius"
         />

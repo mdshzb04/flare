@@ -446,6 +446,12 @@ button.blast-node:hover { border-color: #4a627a; transform: translateY(-1px); }
   color: var(--muted);
   margin-left: auto;
 }
+.impact-counter .live-metrics {
+  flex: 1 1 100%;
+  font-size: 0.75rem;
+  color: var(--accent);
+  letter-spacing: 0.01em;
+}
 .blast-node.ok {
   border-color: color-mix(in srgb, var(--ok) 35%, var(--line));
 }

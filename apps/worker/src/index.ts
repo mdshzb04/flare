@@ -8,6 +8,13 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import {
+  ROOM_TTL_MS,
+  TICK_MS,
+  newRoomSim,
+  tickRoom,
+  type RoomSim,
+} from "./metrics";
 
 function redisUrl() {
   if (process.env.REDIS_URL) return process.env.REDIS_URL;
@@ -27,11 +34,14 @@ function dbUrl() {
 }
 
 const QUEUE = "flare:thumb:jobs";
+const CHANNEL = "flare:room";
 const bucket = process.env.S3_BUCKET || "flare";
 const apiBase = process.env.API_INTERNAL_URL || process.env.API_URL || "http://127.0.0.1:3000";
 const secret = process.env.INTERNAL_SECRET || "flare-dev";
 
 const redis = new Redis(redisUrl(), { maxRetriesPerRequest: null });
+const redisPub = new Redis(redisUrl(), { maxRetriesPerRequest: null });
+const redisSub = new Redis(redisUrl(), { maxRetriesPerRequest: null });
 const sql = postgres(dbUrl(), { max: 5 });
 
 const s3 = new S3Client({
@@ -43,6 +53,12 @@ const s3 = new S3Client({
     secretAccessKey: process.env.S3_SECRET_KEY || "flareflare",
   },
 });
+
+const rooms = new Map<string, RoomSim>();
+
+function roomChannel(roomCode: string) {
+  return `${CHANNEL}:${roomCode}`;
+}
 
 async function ensureBucket() {
   try {
@@ -89,7 +105,72 @@ async function processJob(raw: string) {
   }
 }
 
-async function loop() {
+async function seedAffected(roomCode: string, sim: RoomSim) {
+  try {
+    const res = await fetch(`${apiBase}/api/rooms/${roomCode}`);
+    if (!res.ok) return;
+    const room = (await res.json()) as { affected?: string[] };
+    if (Array.isArray(room.affected)) sim.affected = room.affected.map(String);
+  } catch {
+    /* api may still be booting */
+  }
+}
+
+function touchRoom(roomCode: string, affected?: string[]) {
+  let sim = rooms.get(roomCode);
+  if (!sim) {
+    sim = newRoomSim(affected ?? []);
+    rooms.set(roomCode, sim);
+    if (affected === undefined) void seedAffected(roomCode, sim);
+  } else {
+    if (affected) sim.affected = affected;
+    sim.lastActivity = Date.now();
+  }
+  return sim;
+}
+
+async function metricsLoop() {
+  await redisSub.psubscribe(`${CHANNEL}:*`);
+  redisSub.on("pmessage", (_pattern, channel, message) => {
+    const roomCode = channel.slice(CHANNEL.length + 1);
+    if (!roomCode) return;
+    let msg: { type?: string; room?: { affected?: string[] } };
+    try {
+      msg = JSON.parse(message);
+    } catch {
+      return;
+    }
+    if (msg.type === "metrics") return;
+    if (msg.type === "room:update" && msg.room) {
+      const affected = Array.isArray(msg.room.affected) ? msg.room.affected.map(String) : [];
+      touchRoom(roomCode, affected);
+      return;
+    }
+    if (msg.type === "presence" || msg.type === "event:create" || msg.type === "event:thumb") {
+      touchRoom(roomCode);
+    }
+  });
+
+  console.log("flare-worker metrics on", `${CHANNEL}:*`);
+  for (;;) {
+    const now = Date.now();
+    for (const [code, sim] of rooms) {
+      if (now - sim.lastActivity > ROOM_TTL_MS) {
+        rooms.delete(code);
+        continue;
+      }
+      const payload = tickRoom(sim, now);
+      try {
+        await redisPub.publish(roomChannel(code), JSON.stringify(payload));
+      } catch (err) {
+        console.error("metrics publish failed", code, err);
+      }
+    }
+    await Bun.sleep(TICK_MS);
+  }
+}
+
+async function thumbLoop() {
   await ensureBucket();
   console.log("flare-worker listening on", QUEUE);
   for (;;) {
@@ -103,7 +184,11 @@ async function loop() {
   }
 }
 
-loop().catch((err) => {
+async function main() {
+  await Promise.all([thumbLoop(), metricsLoop()]);
+}
+
+main().catch((err) => {
   console.error(err);
   process.exit(1);
 });

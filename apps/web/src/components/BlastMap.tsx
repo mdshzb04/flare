@@ -1,9 +1,19 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { FLARE_SERVICES, type ServiceId } from "../lib/services";
-import { cascadeFrom, impactStats, isServiceId } from "../lib/deps";
+import { cascadeFrom, isServiceId } from "../lib/deps";
 
 export { FLARE_SERVICES };
 export type { ServiceId };
+
+export type LiveMetrics = {
+  rps: number;
+  latencyMs: number;
+  errorRate: number;
+  queueDepth: number;
+  degradedPct: number;
+  reqTotal: number;
+  ts: number;
+};
 
 type Props = {
   affected: string[];
@@ -15,6 +25,7 @@ type Props = {
   busy?: boolean;
   showCounter?: boolean;
   displayCount?: number;
+  metrics?: LiveMetrics | null;
 };
 
 export function BlastMap({
@@ -27,6 +38,7 @@ export function BlastMap({
   busy = false,
   showCounter = true,
   displayCount,
+  metrics = null,
 }: Props) {
   const set = new Set(affected);
   const hopIndex = useMemo(() => {
@@ -54,7 +66,7 @@ export function BlastMap({
   }, [affected]);
 
   const count = displayCount ?? affected.length;
-  const stats = impactStats(count);
+  const total = FLARE_SERVICES.length;
 
   return (
     <div className={`blast ${compact ? "blast-compact" : ""} ${busy ? "blast-busy" : ""}`}>
@@ -69,9 +81,21 @@ export function BlastMap({
 
       {showCounter ? (
         <div className="impact-counter" aria-live="polite">
-          <strong>{stats.count}</strong>
-          <span>/{stats.total} services</span>
-          <em>~{stats.pct}% stack degraded</em>
+          <strong>{count}</strong>
+          <span>/{total} services</span>
+          <em>
+            {metrics
+              ? `${metrics.degradedPct}% stack degraded`
+              : interactive
+                ? "waiting for worker…"
+                : `${Math.round((count / total) * 100)}% in radius`}
+          </em>
+          {metrics ? (
+            <span className="live-metrics mono">
+              err {metrics.errorRate.toFixed(1)}% · p50 {metrics.latencyMs}ms · q{" "}
+              {metrics.queueDepth} · {metrics.rps.toFixed(1)} rps
+            </span>
+          ) : null}
         </div>
       ) : null}
 

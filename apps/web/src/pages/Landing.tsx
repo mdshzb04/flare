@@ -89,7 +89,15 @@ export function Landing() {
     <div className="lp">
       <div className="lp-bg" aria-hidden />
       <header className="lp-nav">
-        <a className="brand lp-brand" href="#top">
+        <a
+          className="brand lp-brand"
+          href="/"
+          onClick={(e) => {
+            e.preventDefault();
+            if (window.location.pathname === "/") window.location.reload();
+            else window.location.href = "/";
+          }}
+        >
           Fla<span>re</span>
         </a>
         <nav className="lp-nav-links">

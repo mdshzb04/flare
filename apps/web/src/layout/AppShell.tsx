@@ -1,4 +1,4 @@
-import { Link, NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet } from "react-router-dom";
 
 const NAV = [
   { to: "/dashboard", label: "Dashboard", end: true },
@@ -11,9 +11,17 @@ export function AppShell() {
   return (
     <div className="shell product-shell">
       <header className="site-header product-header">
-        <Link className="brand" to="/" title="Flare home">
+        <a
+          className="brand"
+          href="/"
+          title="Flare home"
+          onClick={(e) => {
+            e.preventDefault();
+            window.location.href = "/";
+          }}
+        >
           Fla<span>re</span>
-        </Link>
+        </a>
         <nav className="nav-links product-nav">
           {NAV.map((n) => (
             <NavLink
